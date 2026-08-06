@@ -91,6 +91,7 @@ async function submitToAzure(
     const { operationLocation } = await beginDocumentAnalysis(bytes, mimeType);
     return await updateDocumentJob(jobId, { status: "processing", azure_operation_id: operationLocation });
   } catch (error) {
+    console.error("[documents.service] submitToAzure failed", { jobId, error });
     await updateDocumentJob(jobId, {
       status: "failed",
       error_message: errorMessage(error, "Failed to submit document to Azure Document Intelligence."),

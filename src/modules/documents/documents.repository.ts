@@ -10,6 +10,7 @@ export async function createDocumentJob(input: DocumentJobInsert): Promise<Docum
   const { data, error } = await supabaseAdmin.from("document_jobs").insert(input).select("*").single();
 
   if (error || !data) {
+    console.error("[documents.repository] createDocumentJob failed", { input, error });
     throw new AppError(500, "INTERNAL_ERROR", error?.message ?? "Failed to create document job.");
   }
 
@@ -28,6 +29,7 @@ export async function updateDocumentJob(
     .single();
 
   if (error || !data) {
+    console.error("[documents.repository] updateDocumentJob failed", { id, patch, error });
     throw new AppError(500, "INTERNAL_ERROR", error?.message ?? "Failed to update document job.");
   }
 

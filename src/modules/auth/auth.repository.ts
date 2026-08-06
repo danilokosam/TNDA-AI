@@ -1,4 +1,4 @@
-import { supabaseAdmin } from "@/config/supabase";
+import { createAuthClient, supabaseAdmin } from "@/config/supabase";
 import { ConflictError, UnauthorizedError } from "@/utils/errors";
 import type { ProfileRole } from "@/config/database.types";
 
@@ -103,7 +103,7 @@ export interface PasswordSignInResult {
 }
 
 export async function signInWithPassword(email: string, password: string): Promise<PasswordSignInResult> {
-  const { data, error } = await supabaseAdmin.auth.signInWithPassword({ email, password });
+  const { data, error } = await createAuthClient().auth.signInWithPassword({ email, password });
 
   if (error || !data.session || !data.user) {
     throw new UnauthorizedError("Invalid email or password.");
