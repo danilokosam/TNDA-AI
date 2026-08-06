@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  ci:
+    name: Typecheck, lint, and test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Installs pnpm (matching the root package.json's packageManager field)
+      # and Node.js in one step - Node is needed for pnpm itself and for the
+      # frontend's build tooling. The backend's own scripts still run under
+      # Bun (set up separately below), which is what actually executes them.
+      - name: Set up pnpm + Node
+        uses: pnpm/setup@v2
+        with:
+          runtime: node@22
+          install: false
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test
+        run: pnpm test

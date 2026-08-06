@@ -1,0 +1,9 @@
+{
+  "extends": "@tnda-ai/config/tsconfig.base.json",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "lib": ["ES2022"]
+  },
+  "include": ["src/**/*.ts"]
+}

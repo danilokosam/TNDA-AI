@@ -377,21 +377,23 @@ No GitHub Secrets are required — the dummy test env values live in `vitest.con
 A production image is built with a 5-stage `Dockerfile` on `oven/bun:${BUN_VERSION}-alpine` (pinned to an exact Bun patch version, not the rolling `1-alpine` tag, to match what CI and local development actually run against):
 
 ```
-base (manifest + lockfile)
-  → install (full deps)
+base (workspace manifests + lockfile + packages/config's real content, pnpm installed via Bun)
+  → install (this package's dependency chain, --filter=@tnda-ai/backend..., incl. dev)
     → test (copies source, runs typecheck/lint/test as a build-time gate — the image
              cannot build if any of them fail — then strips *.test.ts files)
-  → install-prod (separate --production-only install, so devDependencies never enter it)
+  → install-prod (same filtered install, --prod, so devDependencies never enter it)
 → release (production-only node_modules + package.json/tsconfig.json/src, non-root `bun`
            user, HEALTHCHECK against the real /health endpoint)
 ```
 
+Since this app lives in a pnpm workspace (see the root [`README.md`](../../README.md)), the **build context is the monorepo root**, not this directory — pnpm needs to see the root lockfile and every workspace member's `package.json` to resolve the dependency graph, even though `--filter` scopes the actual install down to just this package.
+
 ```bash
-# Build
-docker build -t tnda-ai-backend .
+# Build (run from the monorepo root, not apps/backend/)
+docker build -f apps/backend/Dockerfile -t tnda-ai-backend .
 
 # Run (pass real config at runtime — never baked into the image)
-docker run --rm -p 3000:3000 --env-file .env tnda-ai-backend
+docker run --rm -p 3000:3000 --env-file apps/backend/.env tnda-ai-backend
 ```
 
 The `test` stage's `RUN bun run test` step is a genuine gate: because `.dockerignore` deliberately does **not** exclude `*.test.ts` files (excluding them would leave Vitest with nothing to run, silently defeating the gate), and because the `release` stage pulls `src/`/`package.json`/`tsconfig.json` specifically **from** the `test` stage, Docker is forced to actually build and pass it before the final image can exist at all.
