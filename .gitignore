@@ -1,0 +1,55 @@
+# --- Environment & Secrets ---
+.env
+.env.*
+!.env.example
+
+# --- Dependencies & Caches ---
+node_modules/
+.bun/
+.bun/cache/
+.npm/
+.pnpm-store/
+
+# --- Build Outputs & Logs ---
+dist/
+build/
+out/
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+bun-debug.log*
+
+# --- OS & Editor Junk ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+
+# --- Test Coverage / Reports ---
+coverage/
+.nyc_output/
+
+# --- Temporary Uploads & Local Test Fixtures ---
+tmp/
+temp/
+uploads/
+*.tmp
+/*.pdf
+/*.zip
+/*.png
+/*.jpg
+/*.jpeg
+/*.tiff
+/*.bmp
