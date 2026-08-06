@@ -1,0 +1,43 @@
+# --- Version control & CI ---
+.git
+.github
+
+# --- Environment & secrets ---
+# Never baked into the image; real config is injected at `docker run`
+# time via -e/--env-file or an orchestrator's secret manager.
+.env
+.env.*
+
+# --- Dependencies ---
+# Installed fresh inside the image at each relevant build stage.
+node_modules
+
+# --- Coverage & logs ---
+coverage
+*.log
+logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+bun-debug.log*
+
+# --- Build outputs ---
+# Unused by this project today (Bun runs .ts directly, no separate build
+# step) — excluded defensively in case that ever changes.
+dist
+build
+
+# --- OS & editor junk ---
+.DS_Store
+.vscode
+.idea
+*.swp
+
+# NOTE: *.test.ts files are deliberately NOT excluded here, even though
+# that's commonly recommended for a Dockerfile's build context. This
+# Dockerfile runs `bun run test` as a build-time gate (see the Dockerfile's
+# `test` stage) — excluding test files from the context would leave vitest
+# with nothing to run, and the gate would silently "pass" without actually
+# checking anything. Test files never reach the final runtime image
+# anyway: the `test` stage deletes them immediately after running, before
+# the `release` stage copies `src/` from it.
