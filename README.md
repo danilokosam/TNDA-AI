@@ -1,0 +1,233 @@
+# TNDA-AI Backend API
+
+## Overview
+
+**TNDA-AI Backend** is a multi-tenant SaaS backend engine built with **Bun** and **ElysiaJS**, purpose-built for SMBs and retail stores to automate document processing — invoices, receipts, multi-page PDFs, and `.zip` archives of documents — using **Azure Document Intelligence**.
+
+The service is organization-scoped from the ground up: every user belongs to an `organization`, every `organization` is on a `plan` (free / basic / pro) with hard limits on file size, pages per document, pages per month, and documents per month, and every document processing job is pre-validated against those limits **before** a single byte is sent to Azure — protecting both cost and quota.
+
+This README documents the backend only. There is no frontend in this repository.
+
+---
+
+## Tech Stack & Key Libraries
+
+| Concern | Choice | Why |
+|---|---|---|
+| **Runtime** | [Bun](https://bun.sh) | Native TypeScript execution (no separate build step for dev), fast startup, built-in `fetch`/`File`/test runner, native `tsconfig.json` path-alias resolution. |
+| **Framework** | [ElysiaJS](https://elysiajs.com) | High-throughput router built for Bun, first-class TypeScript inference end-to-end, built-in Swagger/OpenAPI generation, Standard Schema support (so Zod schemas plug in directly as route validators — no parallel TypeBox schema layer). |
+| **Validation** | [Zod](https://zod.dev) | Every request body/params object is a Zod schema, passed straight into Elysia's `body`/`params` validators via the Standard Schema protocol. Full type inference, **zero `as` type assertions** anywhere in the codebase. |
+| **Database & Auth** | [Supabase](https://supabase.com) (PostgreSQL + Row Level Security) | Postgres with RLS policies scoped by `organization_id` as defense-in-depth; the backend itself talks to Postgres via the **service-role key** (bypasses RLS) and enforces tenant isolation explicitly in every repository query, since it's a trusted server context. |
+| **External Integration** | Azure Document Intelligence — **REST API**, called directly via `fetch` | Implements the async `HTTP 202` submit/poll pattern by hand (see §Data Flow) rather than using the `@azure/ai-form-recognizer` SDK's poller, because this backend persists the operation location and resumes polling from a **separate, later HTTP request** — a shape the SDK's in-process poller isn't designed for. Includes exponential backoff + jitter on `429 Too Many Requests`. |
+| **File Utilities** | `pdf-lib`, `fflate`, `file-type` | `pdf-lib` reads a PDF's page tree to get an exact page count **without rendering any page**; `fflate` decompresses `.zip` archives fully in memory (no temp files on disk); `file-type` sniffs a file's real MIME type from its magic bytes, so the pre-flight check never trusts a client-supplied `Content-Type` header. |
+
+---
+
+## System Architecture & Directory Structure
+
+The codebase follows a clean, layered, domain-modular architecture. Every domain module is internally consistent: `*.routes.ts` (HTTP layer) → `*.service.ts` (business logic) → `*.repository.ts` (Supabase access) → `*.schema.ts` (Zod DTOs). All first-party imports use the `@/*` path alias (mapped to `src/*` in `tsconfig.json`) instead of relative paths.
+
+```
+backend/
+├── src/
+│   ├── config/                       # Environment validation & client/SDK setup
+│   │   ├── env.ts                    #   Zod-validated process.env — the app refuses to boot on missing/invalid config
+│   │   ├── supabase.ts               #   Service-role Supabase client (supabaseAdmin)
+│   │   ├── database.types.ts         #   Hand-written Database type mirroring supabase/migrations/
+│   │   └── azure.ts                  #   Azure Document Intelligence endpoint/key/model/api-version config
+│   │
+│   ├── modules/                      # Domain modules — one folder per bounded context
+│   │   ├── auth/                     #   Signup, login, "me" — Supabase Auth orchestration
+│   │   │   ├── auth.routes.ts
+│   │   │   ├── auth.service.ts
+│   │   │   ├── auth.repository.ts
+│   │   │   └── auth.schema.ts
+│   │   ├── organization/             #   Org profile, effective plan resolution, usage/quota computation
+│   │   │   ├── organization.routes.ts
+│   │   │   ├── organization.service.ts
+│   │   │   └── organization.repository.ts
+│   │   ├── billing/                  #   Plan catalog + current subscription (thin layer over organization/)
+│   │   │   ├── billing.routes.ts
+│   │   │   └── billing.service.ts
+│   │   └── documents/                #   Upload, pre-flight validation, ZIP batch handling, job polling
+│   │       ├── documents.routes.ts
+│   │       ├── documents.service.ts
+│   │       ├── documents.repository.ts
+│   │       └── documents.schema.ts
+│   │
+│   ├── services/                     # External API adapters (integrations outside our own DB)
+│   │   └── azure-document-intelligence.service.ts   # Submit + poll Azure DI over REST, with 429 backoff
+│   │
+│   ├── middlewares/                  # Cross-cutting HTTP concerns, applied as Elysia plugins
+│   │   ├── auth.middleware.ts        #   Verifies Supabase bearer token, injects { userId, organizationId, role }
+│   │   ├── error.middleware.ts       #   Centralized onError → structured { error: { code, message, details? } } JSON
+│   │   └── rate-limit.middleware.ts  #   In-memory fixed-window limiter, keyed by client IP
+│   │
+│   ├── utils/                        # Pure, dependency-light helpers shared across modules
+│   │   ├── file-inspector.ts         #   Magic-byte MIME detection + PDF page counting
+│   │   ├── zip.ts                    #   In-memory .zip extraction & junk-entry filtering
+│   │   └── errors.ts                 #   AppError hierarchy (ValidationError, QuotaExceededError, ...)
+│   │
+│   └── index.ts                      # App composition root — plugins, middleware order, route mounting, .listen()
+│
+├── supabase/
+│   └── migrations/                   # Numbered SQL migrations (schema + RLS policies + seed data)
+│
+├── .env.example                      # Template for required environment variables
+├── tsconfig.json                     # Strict TS config + "@/*" → "src/*" path alias
+└── package.json
+```
+
+---
+
+## Detailed Data & Execution Flow
+
+### 1. Request Ingestion
+
+```
+HTTP Request
+   │
+   ▼
+Rate Limit Middleware (src/middlewares/rate-limit.middleware.ts)
+   │  in-memory fixed window per client IP; 429 with Retry-After-style detail if exceeded
+   ▼
+Auth Middleware (src/middlewares/auth.middleware.ts)   [protected routes only]
+   │  extracts Bearer token → supabaseAdmin.auth.getUser(token) → loads `profiles` row
+   │  injects `auth: { userId, email, organizationId, role }` into the route context
+   ▼
+Zod body/params/query validation (Elysia Standard Schema)   [per-route]
+   │  400 with per-field issues on failure
+   ▼
+Route handler → Service layer → Repository layer (Supabase)
+```
+
+Every error thrown anywhere in this chain — ours (`AppError` subclasses) or Elysia's own (validation, parse, not-found) — is caught by the global `error.middleware.ts` and normalized to:
+
+```json
+{ "error": { "code": "QUOTA_EXCEEDED", "message": "...", "details": { "...": "..." } } }
+```
+
+### 2. Pre-Flight Inspection & Quota Check (`documents.service.ts`)
+
+Before a single byte is sent to Azure, every uploaded file goes through:
+
+1. **Size gate** — the raw upload is checked against `MAX_UPLOAD_SIZE_MB` (hard server cap) via `File.size`, before reading any bytes.
+2. **Magic-byte MIME detection** — `file-type` inspects the file's binary header to determine its *true* type (`application/pdf`, `image/png`, `image/jpeg`, `image/tiff`, `image/bmp`); the client-supplied `Content-Type` is never trusted.
+3. **Page count extraction** — for PDFs, `pdf-lib` parses only the document's page tree/cross-reference table to get an exact page count, without rendering or OCR-ing a single page.
+4. **Per-file plan constraints** — the organization's *effective plan* (its active subscription, or the implicit `free` tier if it has none) is resolved, and the file is checked against:
+   - `max_file_size_mb` — file too large → `413 Payload Too Large`
+   - `max_pages_per_document` — e.g. the free plan caps a single document at **1 page** → `422 Quota Exceeded`
+5. **Monthly quota check** — the organization's current-period usage is computed (`SUM(page_count)` over `document_jobs` via the `get_organization_monthly_usage` Postgres function, plus a document count), and:
+   ```
+   if current_monthly_pages + new_file_pages > plan.max_pages_per_month:
+       reject with HTTP 422 (QUOTA_EXCEEDED)
+       persist a document_jobs row with status = 'rejected_quota'  (audit trail)
+   ```
+   Only once every check passes does the file get submitted to Azure.
+
+### 3. ZIP Archive Handling (`documents.service.ts → processZipBatch`)
+
+- The archive is decompressed **fully in memory** via `fflate` — no temporary files are ever written to disk.
+- Directory entries, `__MACOSX/`, `.DS_Store`, and empty entries are filtered out before any file reaches validation.
+- The organization's usage baseline is fetched **once** per batch, then a running in-memory quota counter is incremented as each file is accepted — this is what stops many small files inside a single archive from cumulatively exceeding the monthly quota even though each one looks fine in isolation against the initial database snapshot.
+- Each file in the archive independently ends up as one of: `processing`, `rejected` (bad type/corrupt/too large), `rejected_quota` (would exceed quota), or `failed` (Azure submission error) — one bad file never aborts the rest of the batch. The response returns granular per-file status.
+
+### 4. Azure Integration — HTTP 202 Async Pattern (`azure-document-intelligence.service.ts`)
+
+```
+1. POST {endpoint}/documentModels/{modelId}:analyze   (raw file bytes, Ocp-Apim-Subscription-Key header)
+      │
+      ▼  202 Accepted
+   Operation-Location header captured
+      │
+      ▼
+2. INSERT document_jobs (status='pending') → UPDATE status='processing', azure_operation_id=<Operation-Location>
+      │
+      ▼
+3. Respond to client immediately:  { jobId, status: "processing", fileName, pageCount }
+```
+
+`429 Too Many Requests` from Azure (on either submit or poll) is retried automatically with exponential backoff + jitter, honoring the `Retry-After` header when Azure provides one — this happens transparently inside `fetchWithRetry`, so callers never see a 429 propagate.
+
+### 5. Client Polling (`GET /api/v1/documents/jobs/:id`)
+
+```
+Client → GET /api/v1/documents/jobs/:id
+   │
+   ▼
+documents.service.ts → getJobStatus(organizationId, jobId)
+   │
+   ├─ job.status is terminal (completed/failed/rejected_quota)?
+   │     └─ return straight from Supabase, no Azure call
+   │
+   └─ job.status is pending/processing?
+         └─ GET job.azure_operation_id  (one live poll against Azure)
+               ├─ succeeded → UPDATE document_jobs SET status='completed', result_json=<analyzeResult>
+               ├─ failed    → UPDATE document_jobs SET status='failed', error_message=<...>
+               └─ notStarted/running → return current status, no DB write
+```
+
+The client is expected to poll this endpoint (e.g. every 2–5 seconds) until `status` is `completed`, `failed`, or `rejected_quota`.
+
+---
+
+## Getting Started
+
+### Prerequisites
+- [Bun](https://bun.sh) ≥ 1.3
+- A Supabase project (Postgres URL + service-role key)
+- An Azure Document Intelligence resource (endpoint + API key)
+
+### Setup
+
+```bash
+# 1. Copy the environment template and fill in real values
+cp .env.example .env
+
+# 2. Install dependencies
+bun install
+
+# 3. Apply database migrations to your Supabase project
+#    (see PROGRESS.md §3 for the full instructions / supabase CLI commands)
+
+# 4. Run the dev server (hot reload)
+bun run dev
+
+# — or run it once without watching —
+bun run start
+
+# 5. Type-check the whole project (strict TypeScript, no emit)
+bun run typecheck
+```
+
+### Available scripts
+
+| Command | Description |
+|---|---|
+| `bun run dev` | Starts the server with `--watch` (auto-restarts on file change) |
+| `bun run start` | Starts the server once, no watching (production-style run) |
+| `bun run typecheck` | Runs `tsc --noEmit` — strict mode, zero `as` casts enforced by convention |
+
+### API Documentation
+
+Once the server is running, interactive Swagger/OpenAPI docs are available at:
+
+```
+http://localhost:<PORT>/docs
+```
+
+(`PORT` defaults to `3000` — see `.env.example`.)
+
+### Health Check
+
+```
+GET /health → { "status": "ok", "timestamp": "..." }
+```
+
+---
+
+## License & Legal Notice
+
+**Notice:** Although this source code is hosted publicly for demonstration and open-source inspection, all rights are strictly reserved. Unauthorized copying, distribution, modification, commercial use, or creation of derivative works for monetary gain or competitive business purposes without explicit written authorization is strictly prohibited and subject to legal action.
+
+© TNDA-AI. All rights reserved.
