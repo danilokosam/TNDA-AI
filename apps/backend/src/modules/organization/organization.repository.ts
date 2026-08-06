@@ -86,3 +86,43 @@ export async function getDocumentsSubmittedSince(organizationId: string, periodS
 
   return count ?? 0;
 }
+
+export interface JobStatsAggregate {
+  completedJobs: number;
+  failedJobs: number;
+  avgProcessingSeconds: number | null;
+}
+
+/** Success-rate/processing-time aggregate via `get_organization_job_stats` (0010_document_analytics.sql). */
+export async function getJobStatsAggregate(organizationId: string, since: string): Promise<JobStatsAggregate> {
+  const { data, error } = await supabaseAdmin.rpc("get_organization_job_stats", {
+    p_organization_id: organizationId,
+    p_since: since,
+  });
+
+  assertNoQueryError(error);
+
+  const row = data?.[0];
+  return {
+    completedJobs: row?.completed_jobs ?? 0,
+    failedJobs: row?.failed_jobs ?? 0,
+    avgProcessingSeconds: row?.avg_processing_seconds ?? null,
+  };
+}
+
+export interface DailyJobCount {
+  day: string;
+  jobCount: number;
+}
+
+/** Per-day volume for the stats chart, via `get_organization_daily_job_counts` (0010_document_analytics.sql). Sparse — only days with at least one terminal job are returned; gap-filling to a complete date series happens in the service layer. */
+export async function getDailyJobCounts(organizationId: string, since: string): Promise<DailyJobCount[]> {
+  const { data, error } = await supabaseAdmin.rpc("get_organization_daily_job_counts", {
+    p_organization_id: organizationId,
+    p_since: since,
+  });
+
+  assertNoQueryError(error);
+
+  return (data ?? []).map((row) => ({ day: row.day, jobCount: row.job_count }));
+}

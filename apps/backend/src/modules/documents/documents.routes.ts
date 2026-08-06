@@ -1,25 +1,22 @@
 import { Elysia } from "elysia";
 import { authMiddleware } from "@/middlewares/auth.middleware";
 import * as documentsService from "@/modules/documents/documents.service";
-import { jobIdParamSchema, uploadDocumentSchema } from "@/modules/documents/documents.schema";
+import type { DocumentJobRow } from "@/modules/documents/documents.repository";
+import {
+  jobIdParamSchema,
+  listDocumentsQuerySchema,
+  uploadDocumentSchema,
+} from "@/modules/documents/documents.schema";
 
-function toJobDto(job: {
-  id: string;
-  status: string;
-  file_name: string;
-  file_size_bytes: number;
-  page_count: number | null;
-  result_json: Record<string, unknown> | null;
-  error_message: string | null;
-  created_at: string;
-  updated_at: string;
-}) {
+function toJobDto(job: DocumentJobRow) {
   return {
     jobId: job.id,
     status: job.status,
     fileName: job.file_name,
     fileSizeBytes: job.file_size_bytes,
     pageCount: job.page_count,
+    documentType: job.document_type,
+    averageConfidence: job.average_confidence,
     resultJson: job.result_json,
     errorMessage: job.error_message,
     createdAt: job.created_at,
@@ -47,6 +44,20 @@ export const documentsRoutes = new Elysia({ prefix: "/api/v1/documents" })
       return { kind: "batch" as const, batch: result.batch };
     },
     { body: uploadDocumentSchema },
+  )
+  .get(
+    "/",
+    async ({ auth, query }) => {
+      const result = await documentsService.listDocuments(auth.organizationId, query);
+      return {
+        data: result.jobs.map(toJobDto),
+        pagination: {
+          nextCursor: result.nextCursor,
+          hasMore: result.nextCursor !== null,
+        },
+      };
+    },
+    { query: listDocumentsQuerySchema },
   )
   .get(
     "/jobs/:id",

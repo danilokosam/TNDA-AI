@@ -47,10 +47,14 @@ backend/
 │   │   │   ├── auth.service.ts
 │   │   │   ├── auth.repository.ts
 │   │   │   └── auth.schema.ts
-│   │   ├── organization/             #   Org profile, effective plan resolution, usage/quota computation
+│   │   ├── organization/             #   Org profile, effective plan resolution, usage/quota computation, analytics
 │   │   │   ├── organization.routes.ts
 │   │   │   ├── organization.service.ts
-│   │   │   └── organization.repository.ts
+│   │   │   ├── organization.repository.ts
+│   │   │   ├── organization.schema.ts        # query validation for /me/stats (bounded `since` window)
+│   │   │   ├── organization.routes.test.ts
+│   │   │   ├── organization.service.test.ts
+│   │   │   └── organization.repository.test.ts
 │   │   ├── billing/                  #   Plan catalog, current subscription, Stripe Checkout/Portal/webhook sync
 │   │   │   ├── billing.routes.ts
 │   │   │   ├── billing.service.ts
@@ -59,13 +63,15 @@ backend/
 │   │   │   ├── billing.routes.test.ts
 │   │   │   ├── billing.service.test.ts
 │   │   │   └── billing.repository.test.ts
-│   │   └── documents/                #   Upload, pre-flight validation, ZIP batch handling, job polling
+│   │   └── documents/                #   Upload, pre-flight validation, ZIP batch handling, job polling, listing
 │   │       ├── documents.routes.ts
 │   │       ├── documents.service.ts
-│   │       ├── documents.repository.ts
+│   │       ├── documents.repository.ts       # incl. keyset-cursor pagination for the list endpoint
 │   │       ├── documents.schema.ts
 │   │       ├── documents.strategy.ts         # Document-type → processing-strategy registry (owns model selection)
-│   │       └── documents.strategy.test.ts
+│   │       ├── documents.strategy.test.ts
+│   │       ├── documents.routes.test.ts
+│   │       └── documents.repository.test.ts
 │   │
 │   ├── services/                     # External API adapters (integrations outside our own DB)
 │   │   └── azure-document-intelligence.service.ts   # Pure Azure REST adapter — submit + poll, 429 backoff, no model opinion
@@ -79,6 +85,8 @@ backend/
 │   ├── utils/                        # Pure, dependency-light helpers shared across modules
 │   │   ├── file-inspector.ts         #   Magic-byte MIME detection + PDF page counting
 │   │   ├── zip.ts                    #   In-memory .zip extraction & junk-entry filtering
+│   │   ├── confidence.ts             #   Averages Azure's per-field confidence scores; null when a model has none
+│   │   ├── confidence.test.ts
 │   │   ├── errors.ts                 #   AppError hierarchy (ValidationError, QuotaExceededError, ...)
 │   │   └── errors.test.ts
 │   │
@@ -115,12 +123,14 @@ backend/
 | auth | `GET /api/v1/auth/me` | Bearer | Current user + organization |
 | organization | `GET /api/v1/organizations/me` | Bearer | Org record + usage summary |
 | organization | `GET /api/v1/organizations/me/usage` | Bearer | Pages/documents used vs. plan limits for the current billing period |
+| organization | `GET /api/v1/organizations/me/stats` | Bearer | Success rate, avg. processing time, and a gap-filled daily job-count series (`?since=<ISO datetime>`, defaults to the last 30 days, capped at 400 days back) |
 | billing | `GET /api/v1/billing/plans` | Bearer | Plan catalog (free/basic/pro) |
 | billing | `GET /api/v1/billing/subscription` | Bearer | Org's effective plan + subscription row (or implicit free tier) |
 | billing | `POST /api/v1/billing/checkout` | Bearer | Creates a Stripe Checkout Session (`{ planId: 'basic'\|'pro', redirectUrl? }` → `{ url }`) |
 | billing | `POST /api/v1/billing/portal` | Bearer | Creates a Stripe Billing Portal session (`{ returnUrl? }` → `{ url }`) |
 | billing | `POST /api/v1/billing/webhook` | **public** — Stripe signature, not bearer | Receives `checkout.session.completed` / `customer.subscription.created`\|`updated`\|`deleted`, syncs `subscriptions` |
 | documents | `POST /api/v1/documents` | Bearer | Multipart upload — single file **or** `.zip` batch, with an optional `documentType` field (`invoice`\|`receipt`\|`identity_document`\|`generic`, defaults to `invoice`) selecting the processing strategy |
+| documents | `GET /api/v1/documents` | Bearer | Cursor-paginated job list — filter by `status`, `documentType`, `search` (matches `fileName`), `dateFrom`/`dateTo`; `limit` 1-100 (default 20) |
 | documents | `GET /api/v1/documents/jobs/:id` | Bearer | Polls job status, pulling a fresh status from Azure if still in flight |
 
 Swagger UI is mounted at `/docs`.
@@ -352,10 +362,11 @@ GET /health → { "status": "ok", "timestamp": "..." }
 
 ## Testing & Code Quality
 
-- **`bun run test`** runs the Vitest suite (5 files, ~49 tests) covering the `billing` module end-to-end (service, repository, routes), the centralized error middleware, and the `AppError` hierarchy. None of it needs real Supabase/Azure/Stripe credentials: `vitest.config.ts` sets dummy, non-secret env values that satisfy `env.ts`'s eagerly-validated Zod schema.
+- **`bun run test`** runs the Vitest suite (12 files, 94 tests) covering the `billing`, `documents`, and `organization` modules end-to-end (service, repository, routes), the centralized error middleware, and the `AppError` hierarchy. None of it needs real Supabase/Azure/Stripe credentials: `vitest.config.ts` sets dummy, non-secret env values that satisfy `env.ts`'s eagerly-validated Zod schema.
 - **Stripe webhook signature verification is tested for real, with zero network calls**: tests sign a plain JS payload locally with `stripe.webhooks.generateTestHeaderStringAsync()` (pure HMAC, same secret as the test env) and hand it to the real `verifyStripeWebhookEvent`/`handleStripeWebhookEvent` — exercising the actual verification code path a live Stripe delivery would hit.
-- **Route-level tests run in-process** via Elysia's `app.handle(request)` — the real routes and the real error middleware, composed exactly as `src/index.ts` does, with no port ever bound.
-- **Repository tests mock `supabaseAdmin`** with a minimal fake of Supabase's fluent query builder, verifying both the success path and the `AppError`-on-failure path for every exported function.
+- **Route-level tests run in-process** via Elysia's `app.handle(request)` — the real routes and the real error middleware, composed exactly as `src/index.ts` does, with no port ever bound. `documents.routes.test.ts`/`organization.routes.test.ts` are the first tests to exercise an *authenticated* route path end-to-end (rather than only asserting the no-token 401 case): they mock `supabaseAdmin.auth.getUser` and the `profiles` lookup that `auth.middleware.ts` itself makes, so a request carrying a bearer token reaches the real handler as a real authenticated user — the pattern to reuse for any future route test that needs auth to succeed.
+- **Repository tests mock `supabaseAdmin`** with a minimal fake of Supabase's fluent query builder, verifying both the success path and the `AppError`-on-failure path for every exported function. `documents.repository.test.ts` extends the query-builder mock with the additional filter methods (`order`/`limit`/`ilike`/`gte`/`lte`/`lt`) the list endpoint's dynamic filtering needs; `organization.repository.test.ts` uses a plain `rpc` mock instead, since `getJobStatsAggregate`/`getDailyJobCounts` call Postgres functions rather than the fluent query builder.
+- **`organization.service.test.ts` pins time with `vi.useFakeTimers()`** to test the daily-count gap-filling logic (`buildDailySeries`) deterministically — the service always computes its date range relative to `new Date()`, so the alternative would be asserting on relative day-offsets instead of exact dates, which is harder to read and easier to get subtly wrong.
 - **ESLint** (`eslint.config.js`) enforces the project's zero-`as`/zero-`any` convention as a hard rule in application code (`@typescript-eslint/consistent-type-assertions: never`, `no-explicit-any: error`). Test files get a narrow, documented exception for mocking Supabase's deeply generic query-builder types — application code has no exceptions.
 
 ---

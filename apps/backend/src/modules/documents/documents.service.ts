@@ -10,8 +10,11 @@ import { getDocumentsSubmittedSince, getMonthlyPagesUsed, type PlanRow } from "@
 import {
   createDocumentJob,
   getDocumentJobForOrganization,
+  listDocumentJobsForOrganization,
   updateDocumentJob,
   type DocumentJobRow,
+  type ListDocumentJobsFilters,
+  type ListDocumentJobsResult,
 } from "@/modules/documents/documents.repository";
 
 const ZIP_SIGNATURES: readonly number[][] = [
@@ -328,4 +331,11 @@ export async function getJobStatus(organizationId: string, jobId: string): Promi
   }
 
   return job;
+}
+
+export async function listDocuments(
+  organizationId: string,
+  filters: ListDocumentJobsFilters,
+): Promise<ListDocumentJobsResult> {
+  return listDocumentJobsForOrganization(organizationId, filters);
 }
