@@ -8,6 +8,7 @@
 export type ProfileRole = "owner" | "admin" | "member";
 export type SubscriptionStatus = "trialing" | "active" | "past_due" | "canceled" | "incomplete";
 export type DocumentJobStatus = "pending" | "processing" | "completed" | "failed" | "rejected_quota";
+export type DocumentType = "invoice" | "receipt" | "identity_document" | "generic";
 
 export interface Database {
   public: {
@@ -156,6 +157,8 @@ export interface Database {
           page_count: number | null;
           azure_operation_id: string | null;
           status: DocumentJobStatus;
+          document_type: DocumentType;
+          average_confidence: number | null;
           result_json: Record<string, unknown> | null;
           error_message: string | null;
           created_at: string;
@@ -170,6 +173,8 @@ export interface Database {
           page_count?: number | null;
           azure_operation_id?: string | null;
           status?: DocumentJobStatus;
+          document_type?: DocumentType;
+          average_confidence?: number | null;
           result_json?: Record<string, unknown> | null;
           error_message?: string | null;
           created_at?: string;
@@ -184,6 +189,8 @@ export interface Database {
           page_count?: number | null;
           azure_operation_id?: string | null;
           status?: DocumentJobStatus;
+          document_type?: DocumentType;
+          average_confidence?: number | null;
           result_json?: Record<string, unknown> | null;
           error_message?: string | null;
           created_at?: string;
@@ -217,11 +224,20 @@ export interface Database {
         Args: Record<string, never>;
         Returns: string;
       };
+      get_organization_job_stats: {
+        Args: { p_organization_id: string; p_since: string };
+        Returns: { completed_jobs: number; failed_jobs: number; avg_processing_seconds: number | null }[];
+      };
+      get_organization_daily_job_counts: {
+        Args: { p_organization_id: string; p_since: string };
+        Returns: { day: string; job_count: number }[];
+      };
     };
     Enums: {
       profile_role: ProfileRole;
       subscription_status: SubscriptionStatus;
       document_job_status: DocumentJobStatus;
+      document_type: DocumentType;
     };
   };
 }

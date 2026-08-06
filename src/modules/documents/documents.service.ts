@@ -1,6 +1,7 @@
 import { env } from "@/config/env";
 import { inspectDocumentFile, type InspectedFile, type SupportedDocumentMimeType } from "@/utils/file-inspector";
 import { extractZipEntries } from "@/utils/zip";
+import { computeAverageConfidence } from "@/utils/confidence";
 import { AppError, PayloadTooLargeError, QuotaExceededError, ValidationError } from "@/utils/errors";
 import { getAnalysisOperationStatus } from "@/services/azure-document-intelligence.service";
 import { getProcessingStrategy, type DocumentType } from "@/modules/documents/documents.strategy";
@@ -132,6 +133,7 @@ export async function processSingleDocument(
       file_size_bytes: inspected.sizeBytes,
       page_count: inspected.pageCount,
       status: "rejected_quota",
+      document_type: documentType,
       error_message: quotaCheck.reason,
     });
     throw new QuotaExceededError(quotaCheck.reason);
@@ -144,6 +146,7 @@ export async function processSingleDocument(
     file_size_bytes: inspected.sizeBytes,
     page_count: inspected.pageCount,
     status: "pending",
+    document_type: documentType,
   });
 
   return submitForAnalysis(job.id, bytes, inspected.mimeType, documentType);
@@ -219,6 +222,7 @@ export async function processZipBatch(
         file_size_bytes: inspected.sizeBytes,
         page_count: inspected.pageCount,
         status: "rejected_quota",
+        document_type: documentType,
         error_message: quotaCheck.reason,
       });
       results.push({
@@ -237,6 +241,7 @@ export async function processZipBatch(
       file_size_bytes: inspected.sizeBytes,
       page_count: inspected.pageCount,
       status: "pending",
+      document_type: documentType,
     });
 
     try {
@@ -307,9 +312,11 @@ export async function getJobStatus(organizationId: string, jobId: string): Promi
   const azureStatus = await getAnalysisOperationStatus(job.azure_operation_id);
 
   if (azureStatus.status === "succeeded") {
+    const resultJson = azureStatus.analyzeResult ?? null;
     return updateDocumentJob(job.id, {
       status: "completed",
-      result_json: azureStatus.analyzeResult ?? null,
+      result_json: resultJson,
+      average_confidence: computeAverageConfidence(resultJson),
     });
   }
 
