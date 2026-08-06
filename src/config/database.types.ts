@@ -1,0 +1,218 @@
+/**
+ * Hand-written mirror of the Supabase schema defined in
+ * `supabase/migrations/`. Keep in sync with those files, or regenerate with
+ * `supabase gen types typescript` once the project is linked to a live
+ * Supabase instance.
+ */
+
+export type ProfileRole = "owner" | "admin" | "member";
+export type SubscriptionStatus = "trialing" | "active" | "past_due" | "canceled" | "incomplete";
+export type DocumentJobStatus = "pending" | "processing" | "completed" | "failed" | "rejected_quota";
+
+export interface Database {
+  public: {
+    Tables: {
+      organizations: {
+        Row: {
+          id: string;
+          name: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          name: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          name?: string;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      profiles: {
+        Row: {
+          id: string;
+          organization_id: string;
+          email: string;
+          role: ProfileRole;
+          created_at: string;
+        };
+        Insert: {
+          id: string;
+          organization_id: string;
+          email: string;
+          role?: ProfileRole;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          organization_id?: string;
+          email?: string;
+          role?: ProfileRole;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "profiles_organization_id_fkey";
+            columns: ["organization_id"];
+            referencedRelation: "organizations";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      plans: {
+        Row: {
+          id: string;
+          name: string;
+          price_monthly: number;
+          max_documents_per_month: number;
+          max_pages_per_document: number;
+          max_pages_per_month: number;
+          max_file_size_mb: number;
+          created_at: string;
+        };
+        Insert: {
+          id: string;
+          name: string;
+          price_monthly?: number;
+          max_documents_per_month: number;
+          max_pages_per_document: number;
+          max_pages_per_month: number;
+          max_file_size_mb: number;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          name?: string;
+          price_monthly?: number;
+          max_documents_per_month?: number;
+          max_pages_per_document?: number;
+          max_pages_per_month?: number;
+          max_file_size_mb?: number;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      subscriptions: {
+        Row: {
+          id: string;
+          organization_id: string;
+          plan_id: string;
+          status: SubscriptionStatus;
+          current_period_start: string;
+          current_period_end: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          organization_id: string;
+          plan_id: string;
+          status?: SubscriptionStatus;
+          current_period_start?: string;
+          current_period_end: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          organization_id?: string;
+          plan_id?: string;
+          status?: SubscriptionStatus;
+          current_period_start?: string;
+          current_period_end?: string;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "subscriptions_organization_id_fkey";
+            columns: ["organization_id"];
+            referencedRelation: "organizations";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "subscriptions_plan_id_fkey";
+            columns: ["plan_id"];
+            referencedRelation: "plans";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      document_jobs: {
+        Row: {
+          id: string;
+          organization_id: string;
+          user_id: string;
+          file_name: string;
+          file_size_bytes: number;
+          page_count: number | null;
+          azure_operation_id: string | null;
+          status: DocumentJobStatus;
+          result_json: Record<string, unknown> | null;
+          error_message: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          organization_id: string;
+          user_id: string;
+          file_name: string;
+          file_size_bytes: number;
+          page_count?: number | null;
+          azure_operation_id?: string | null;
+          status?: DocumentJobStatus;
+          result_json?: Record<string, unknown> | null;
+          error_message?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          organization_id?: string;
+          user_id?: string;
+          file_name?: string;
+          file_size_bytes?: number;
+          page_count?: number | null;
+          azure_operation_id?: string | null;
+          status?: DocumentJobStatus;
+          result_json?: Record<string, unknown> | null;
+          error_message?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "document_jobs_organization_id_fkey";
+            columns: ["organization_id"];
+            referencedRelation: "organizations";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "document_jobs_user_id_fkey";
+            columns: ["user_id"];
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+    };
+    Views: {
+      [_ in never]: never;
+    };
+    Functions: {
+      get_organization_monthly_usage: {
+        Args: { p_organization_id: string };
+        Returns: number;
+      };
+      current_organization_id: {
+        Args: Record<string, never>;
+        Returns: string;
+      };
+    };
+    Enums: {
+      profile_role: ProfileRole;
+      subscription_status: SubscriptionStatus;
+      document_job_status: DocumentJobStatus;
+    };
+  };
+}
