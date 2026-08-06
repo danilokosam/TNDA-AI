@@ -32,7 +32,12 @@ const envSchema = z.object({
 export type Env = z.infer<typeof envSchema>;
 
 function loadEnv(): Env {
-  const parsed = envSchema.safeParse(Bun.env);
+  // process.env, not Bun.env: this module is also imported by test files,
+  // which Vitest runs in its own worker pool — that pool doesn't have the
+  // `Bun` global available even when the top-level `vitest` command was
+  // invoked via `bun run`. Bun keeps `process.env`/`Bun.env` in sync in
+  // its own runtime, so this works identically for the real app.
+  const parsed = envSchema.safeParse(process.env);
 
   if (!parsed.success) {
     const formatted = parsed.error.issues

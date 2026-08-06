@@ -13,7 +13,7 @@ export const SUPPORTED_DOCUMENT_MIME_TYPES = [
 export type SupportedDocumentMimeType = (typeof SUPPORTED_DOCUMENT_MIME_TYPES)[number];
 
 function isSupportedMimeType(mime: string): mime is SupportedDocumentMimeType {
-  return (SUPPORTED_DOCUMENT_MIME_TYPES as readonly string[]).includes(mime);
+  return SUPPORTED_DOCUMENT_MIME_TYPES.some((supported) => supported === mime);
 }
 
 export interface InspectedFile {

@@ -12,7 +12,7 @@ import {
 } from "@/modules/billing/billing.repository";
 import type { CheckoutRequestInput, PortalRequestInput } from "@/modules/billing/billing.schema";
 
-function appendQueryString(url: string, queryString: string): string {
+export function appendQueryString(url: string, queryString: string): string {
   return `${url}${url.includes("?") ? "&" : "?"}${queryString}`;
 }
 
@@ -131,11 +131,11 @@ const PLAN_ID_BY_STRIPE_PRICE_ID: Record<string, PaidPlanId> = {
   [STRIPE_PRICE_ID_BY_PLAN.pro]: "pro",
 };
 
-function getPlanIdForPriceId(priceId: string): PaidPlanId | null {
+export function getPlanIdForPriceId(priceId: string): PaidPlanId | null {
   return PLAN_ID_BY_STRIPE_PRICE_ID[priceId] ?? null;
 }
 
-function mapStripeStatusToInternal(status: Stripe.Subscription.Status): SubscriptionStatus {
+export function mapStripeStatusToInternal(status: Stripe.Subscription.Status): SubscriptionStatus {
   switch (status) {
     case "trialing":
       return "trialing";
@@ -154,18 +154,38 @@ function mapStripeStatusToInternal(status: Stripe.Subscription.Status): Subscrip
   }
 }
 
-function resolveCustomerId(customer: string | Stripe.Customer | Stripe.DeletedCustomer): string {
+export function resolveCustomerId(customer: string | Stripe.Customer | Stripe.DeletedCustomer): string {
   return typeof customer === "string" ? customer : customer.id;
 }
 
 /**
- * Syncs a full Stripe Subscription object into `subscriptions`. Used by
+ * The subset of `Stripe.Subscription` this module actually reads. Narrowed
+ * deliberately (rather than taking the full SDK type, which has 30+
+ * required fields) so a realistic test fixture can be built without ever
+ * needing a type assertion — any real `Stripe.Subscription` structurally
+ * satisfies this already, so call sites need no cast either.
+ */
+export interface StripeSubscriptionSyncData {
+  id: string;
+  status: Stripe.Subscription.Status;
+  customer: string | Stripe.Customer | Stripe.DeletedCustomer;
+  items: {
+    data: Array<{
+      price: { id: string };
+      current_period_start: number;
+      current_period_end: number;
+    }>;
+  };
+}
+
+/**
+ * Syncs a Stripe subscription's data into `subscriptions`. Used by
  * `customer.subscription.created`/`updated`/`deleted` directly, and by
  * `checkout.session.completed` (which retrieves the subscription itself
  * first) so the row is consistent immediately after checkout rather than
  * waiting on a second webhook delivery.
  */
-async function syncSubscriptionFromStripeObject(subscription: Stripe.Subscription): Promise<void> {
+export async function syncSubscriptionFromStripeObject(subscription: StripeSubscriptionSyncData): Promise<void> {
   const stripeCustomerId = resolveCustomerId(subscription.customer);
   const organizationId = await findOrganizationIdByStripeCustomerId(stripeCustomerId);
 
@@ -203,7 +223,11 @@ async function syncSubscriptionFromStripeObject(subscription: Stripe.Subscriptio
   });
 }
 
-async function handleCheckoutSessionCompleted(session: Stripe.Checkout.Session): Promise<void> {
+export interface StripeCheckoutSessionSyncData {
+  subscription: string | Stripe.Subscription | null;
+}
+
+export async function handleCheckoutSessionCompleted(session: StripeCheckoutSessionSyncData): Promise<void> {
   if (typeof session.subscription !== "string") {
     // Not a subscription-mode session (or Stripe already expanded it away) — nothing to sync.
     return;
