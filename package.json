@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "bun run --watch src/index.ts",
     "start": "bun run src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "db:migrate": "bun run scripts/db-migrate.ts",
+    "db:push": "supabase db push"
   },
   "dependencies": {
     "@elysiajs/cors": "^1.1.1",
@@ -16,6 +18,7 @@
     "fflate": "^0.8.2",
     "file-type": "^19.6.0",
     "pdf-lib": "^1.17.1",
+    "postgres": "^3.4.9",
     "zod": "^3.23.8"
   },
   "devDependencies": {

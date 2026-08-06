@@ -1,4 +1,9 @@
 -- Profiles: one row per auth.users, scoped to an organization.
+--
+-- RLS is enabled and policies are added in 0004_authorization.sql, not
+-- here — see that file for why (current_organization_id() needs this
+-- table to exist first, so it can't be defined any earlier than this
+-- migration, and the policies that call it can't either).
 create type public.profile_role as enum ('owner', 'admin', 'member');
 
 create table if not exists public.profiles (
@@ -10,22 +15,3 @@ create table if not exists public.profiles (
 );
 
 create index if not exists profiles_organization_id_idx on public.profiles (organization_id);
-
-alter table public.profiles enable row level security;
-
--- Members can see every profile within their own organization (needed for
--- team management screens) but never rows from another tenant.
-create policy "profiles_select_same_org"
-  on public.profiles
-  for select
-  to authenticated
-  using (organization_id = public.current_organization_id());
-
--- A user may only ever update their own row, and may not move themselves
--- to a different organization or grant themselves a new role.
-create policy "profiles_update_self"
-  on public.profiles
-  for update
-  to authenticated
-  using (id = auth.uid())
-  with check (id = auth.uid() and organization_id = public.current_organization_id());
