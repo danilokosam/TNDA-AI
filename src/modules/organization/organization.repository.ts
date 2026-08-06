@@ -15,7 +15,7 @@ export type OrganizationRow = Database["public"]["Tables"]["organizations"]["Row
 export async function getOrganizationById(organizationId: string): Promise<OrganizationRow> {
   const { data, error } = await supabaseAdmin
     .from("organizations")
-    .select("id, name, created_at")
+    .select("id, name, stripe_customer_id, created_at")
     .eq("id", organizationId)
     .single();
 
@@ -30,7 +30,9 @@ export async function getOrganizationById(organizationId: string): Promise<Organ
 export async function getActiveSubscription(organizationId: string): Promise<SubscriptionRow | null> {
   const { data, error } = await supabaseAdmin
     .from("subscriptions")
-    .select("id, organization_id, plan_id, status, current_period_start, current_period_end, created_at")
+    .select(
+      "id, organization_id, plan_id, status, current_period_start, current_period_end, stripe_customer_id, stripe_subscription_id, created_at",
+    )
     .eq("organization_id", organizationId)
     .in("status", ["trialing", "active", "past_due"])
     .order("created_at", { ascending: false })

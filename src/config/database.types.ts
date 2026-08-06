@@ -16,16 +16,19 @@ export interface Database {
         Row: {
           id: string;
           name: string;
+          stripe_customer_id: string | null;
           created_at: string;
         };
         Insert: {
           id?: string;
           name: string;
+          stripe_customer_id?: string | null;
           created_at?: string;
         };
         Update: {
           id?: string;
           name?: string;
+          stripe_customer_id?: string | null;
           created_at?: string;
         };
         Relationships: [];
@@ -102,6 +105,8 @@ export interface Database {
           status: SubscriptionStatus;
           current_period_start: string;
           current_period_end: string;
+          stripe_customer_id: string | null;
+          stripe_subscription_id: string | null;
           created_at: string;
         };
         Insert: {
@@ -111,6 +116,8 @@ export interface Database {
           status?: SubscriptionStatus;
           current_period_start?: string;
           current_period_end: string;
+          stripe_customer_id?: string | null;
+          stripe_subscription_id?: string | null;
           created_at?: string;
         };
         Update: {
@@ -120,6 +127,8 @@ export interface Database {
           status?: SubscriptionStatus;
           current_period_start?: string;
           current_period_end?: string;
+          stripe_customer_id?: string | null;
+          stripe_subscription_id?: string | null;
           created_at?: string;
         };
         Relationships: [

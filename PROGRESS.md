@@ -16,6 +16,9 @@ A working, type-checked (strict TypeScript, zero `as` casts) Bun + ElysiaJS back
 | organization | `GET /api/v1/organizations/me/usage` | required | pages/documents used vs. plan limits for the current billing period |
 | billing | `GET /api/v1/billing/plans` | required | plan catalog (free/basic/pro) |
 | billing | `GET /api/v1/billing/subscription` | required | org's effective plan + subscription row (or implicit free tier) |
+| billing | `POST /api/v1/billing/checkout` | required | creates a Stripe Checkout Session (`{ planId: 'basic'\|'pro', redirectUrl? }` → `{ url }`) — see §9 |
+| billing | `POST /api/v1/billing/portal` | required | creates a Stripe Customer Portal session (`{ returnUrl? }` → `{ url }`) |
+| billing | `POST /api/v1/billing/webhook` | **public** — Stripe signature, not bearer auth | receives `checkout.session.completed` / `customer.subscription.created`\|`updated`\|`deleted`, syncs `subscriptions` — see §9 |
 | documents | `POST /api/v1/documents` | required | multipart upload, single file **or** `.zip` batch — see §6 |
 | documents | `GET /api/v1/documents/jobs/:id` | required | polls job status, pulling a fresh status from Azure if still in flight |
 
@@ -41,7 +44,7 @@ src/
   modules/
     auth/            signup / login / me
     organization/     org profile, usage & quota computation (owns "effective plan" logic)
-    billing/          plan catalog + current subscription (thin layer over organization module — no DB access of its own, so no repository.ts)
+    billing/          plan catalog, current subscription, Stripe Checkout/Portal/webhook sync
     documents/        upload (single + zip), pre-flight quota checks, job polling
       *.routes.ts      HTTP layer (Elysia routes, Zod validation)
       *.service.ts     business logic
@@ -58,7 +61,7 @@ supabase/migrations/  numbered SQL migrations (see §3)
 
 ## 3. Database Migrations Status
 
-**Applied and verified against the live Supabase project** (see §7). Eight SQL files in `supabase/migrations/`, applied in order:
+**Applied and verified against the live Supabase project** (see §7). Nine SQL files in `supabase/migrations/`, applied in order:
 
 1. `0001_extensions.sql` — `pgcrypto` for `gen_random_uuid()`
 2. `0002_organizations.sql` — `organizations` table only (RLS/policies deliberately deferred — see `0004`)
@@ -68,6 +71,7 @@ supabase/migrations/  numbered SQL migrations (see §3)
 6. `0006_subscriptions.sql` — `subscriptions`, one active/trialing/past_due row per org enforced via partial unique index
 7. `0007_document_jobs.sql` — `document_jobs` table + status enum (`pending/processing/completed/failed/rejected_quota`) + `updated_at` trigger
 8. `0008_usage_functions.sql` — `get_organization_monthly_usage(org_id)` SQL function used by the pre-flight quota check
+9. `0009_stripe_billing.sql` — adds `organizations.stripe_customer_id` (unique, nullable) and `subscriptions.stripe_customer_id`/`stripe_subscription_id` (the latter a **plain, non-partial** unique index, not the partial-index style used elsewhere in this schema — see §9 for why) for Stripe webhook sync
 
 RLS is enabled on every table with `organization_id`-scoped `select` policies (and a same-org `insert` policy on `document_jobs`); writes beyond that are service-role only.
 
@@ -139,17 +143,41 @@ Added `scripts/test-e2e-azure.ts`, a self-contained live pipeline test: it spawn
 
 **Verified:** `bun run scripts/test-e2e-azure.ts` completes successfully end-to-end against the real Azure resource — job goes `processing` → `completed` after 4 polls (~8s), and the printed `resultJson` contains genuine Azure `prebuilt-invoice` extraction output (`docType: "invoice"`, confidence `1`, fields like `BillingAddressRecipient` correctly pulled from the mock PDF). `bun run typecheck` remains clean.
 
-## 9. Current State & Next Steps
+## 9. Stripe Billing & Subscriptions (2026-08-06)
 
-**Verified so far:** `bun install`, `bun run typecheck` (clean, zero errors, zero `as` casts), the server boots and responds correctly (`bun run dev` / `bun run start`) — manually smoke-tested `/health`, `/docs`, auth-guard rejection (401 with structured JSON), Zod validation errors (400 with per-field issues), 404 handling, and multipart auth-gating — **all 8 database migrations are applied and verified against the live Supabase project (§7)** — and **the full document pipeline (signup → upload → Azure submit → poll → completed, with real extracted fields) is verified working end-to-end against live Azure and Supabase resources (§8)**.
+Full checkout → webhook → subscription-sync flow, added to the `billing` module (which gained a `billing.repository.ts` and `billing.schema.ts` it didn't have before):
+
+- **`src/config/stripe.ts`** — a single `stripe` client built from `STRIPE_SECRET_KEY`, plus `STRIPE_PRICE_ID_BY_PLAN` (`{ basic, pro }`) mapping our plan slugs to the two Stripe Price IDs from env. `env.ts` gained `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` / `STRIPE_PRICE_ID_BASIC` / `STRIPE_PRICE_ID_PRO` as required fields (`APP_URL` already existed from initial scaffolding and is reused as the default Checkout/Portal redirect base).
+- **`POST /api/v1/billing/checkout`** (`{ planId: 'basic'|'pro', redirectUrl? }` → `{ url }`): resolves the organization's Stripe Customer, creating one via `stripe.customers.create()` and persisting it to `organizations.stripe_customer_id` on first use (`resolveOrCreateStripeCustomer`), then creates a `mode: "subscription"` Checkout Session with `client_reference_id`/`metadata` set to the organization id, and returns the hosted Checkout URL.
+- **`POST /api/v1/billing/portal`** (`{ returnUrl? }` → `{ url }`): creates a Billing Portal session for the org's existing Stripe Customer; `422`s with a clear message if the org has never checked out (no customer yet).
+- **`POST /api/v1/billing/webhook`** (public): registered **before** `.use(authMiddleware)` in `billing.routes.ts` (same pattern as `auth.routes.ts`'s public signup/login), since Stripe authenticates via the `stripe-signature` header, not a bearer token. Uses Elysia's `parse: "text"` route option (plus `body: z.string()` so the type inference matches) to get the **exact raw body string** — required because Stripe's HMAC signature check is byte-sensitive and would break on a JSON-parsed-then-re-serialized body. `verifyStripeWebhookEvent` calls `stripe.webhooks.constructEventAsync(rawBody, signature, STRIPE_WEBHOOK_SECRET)` (the async variant, Stripe's recommended one for non-Node runtimes like Bun, since it uses Web Crypto instead of Node's sync `crypto`) and throws `ValidationError` (400) on a bad/missing signature, per the task's explicit requirement.
+- **Event handling** (`handleStripeWebhookEvent`): `customer.subscription.created`/`updated`/`deleted` all funnel through one `syncSubscriptionFromStripeObject` function that reads the org via `organizations.stripe_customer_id`, reads plan + billing period from `subscription.items.data[0]` (**not** top-level `subscription.current_period_start/end` — Stripe moved those fields to the item level in this API version, since a subscription can now have multiple items with independent billing cycles), maps the Stripe price id back to our `plan_id` and Stripe's richer status set (`incomplete_expired`, `unpaid`, `paused`, ...) down to our 5-value `subscription_status` enum, and **upserts by `stripe_subscription_id`** — so `created`→`updated`→`deleted` for the same subscription all converge on one row regardless of delivery order. `checkout.session.completed` retrieves the full subscription object and reuses the same sync function immediately, rather than waiting on a possibly-delayed separate `customer.subscription.created` delivery. Unrecognized customers/price-ids are logged and skipped (return `200`) rather than thrown as errors — retrying a webhook won't fix a config problem, so erroring would just cause Stripe to retry pointlessly for up to 3 days.
+- **A real cast-avoidance catch during review:** an early draft of the price-id → plan-id reverse lookup used `Object.entries(...).find(...)` and cast the result back to `PaidPlanId` with `as` — caught before shipping and replaced with a properly-typed `Record<string, PaidPlanId>` reverse map instead, keeping the zero-`as` rule intact.
+- **A real correctness catch during review:** the initial migration made `subscriptions.stripe_subscription_id`'s unique index **partial** (`where stripe_subscription_id is not null`), mirroring the style used for `organizations.stripe_customer_id` — but PostgREST's `.upsert(..., { onConflict: "stripe_subscription_id" })` generates a plain `ON CONFLICT (stripe_subscription_id) DO UPDATE` with no `WHERE` clause, which can't target a partial index. Fixed by making that one index non-partial before ever applying it live; Postgres already treats every `NULL` as distinct under a plain unique index, so nothing was lost by dropping the partial predicate.
+
+**Verified live**, end-to-end, against the real Stripe API and the live Supabase project (no Stripe CLI available in this sandbox, so webhook delivery was tested by self-signing events with `stripe.webhooks.generateTestHeaderStringAsync()` using the same `STRIPE_WEBHOOK_SECRET` configured in `.env` — this exercises the exact same verification and sync code path a real Stripe-delivered webhook would, just without needing a publicly reachable endpoint):
+
+1. Signup → `GET /billing/subscription` correctly shows the implicit free tier (no `subscriptions` row yet).
+2. `POST /billing/checkout` → real `checkout.stripe.com` URL returned; `organizations.stripe_customer_id` persisted.
+3. `POST /billing/portal` → real `billing.stripe.com` URL returned, reusing that same customer.
+4. `POST /billing/webhook` with a bad signature → `400 VALIDATION_ERROR`, as required.
+5. A self-signed `customer.subscription.updated` event → `200`, and `subscriptions` gets a new row (`plan_id: "basic"`, `status: "active"`, correct period dates, both Stripe ids set); `GET /billing/subscription` immediately reflects it.
+6. A self-signed `customer.subscription.deleted` event for the *same* subscription id → `200`, and the **same row** flips to `status: "canceled"` (confirming the upsert-by-`stripe_subscription_id` convergence works); `GET /billing/subscription` correctly falls back to the free plan again, since `canceled` isn't in the "active" set the partial `subscriptions_one_active_per_org` index / `getActiveSubscription` query looks for.
+
+`bun run typecheck` remains clean throughout (zero `as` casts).
+
+## 10. Current State & Next Steps
+
+**Verified so far:** `bun install`, `bun run typecheck` (clean, zero errors, zero `as` casts), the server boots and responds correctly (`bun run dev` / `bun run start`) — manually smoke-tested `/health`, `/docs`, auth-guard rejection (401 with structured JSON), Zod validation errors (400 with per-field issues), 404 handling, and multipart auth-gating — **all 9 database migrations are applied and verified against the live Supabase project (§7)** — **the full document pipeline (signup → upload → Azure submit → poll → completed, with real extracted fields) is verified working end-to-end against live Azure and Supabase resources (§8)** — and **Stripe Checkout, Billing Portal, and webhook subscription sync are verified working end-to-end against the live Stripe API (§9)**.
 
 **Not yet done / explicitly out of scope for this pass:**
 
 - **No automated tests** — nothing here has unit/integration test coverage yet; would recommend starting with `documents.service.ts`'s quota math (the in-memory running-quota logic in `processZipBatch` is the highest-value thing to pin down with tests) and the error-middleware status-code mapping. The §8 bug is also a good argument for a regression test around "does any code path call an auth-session-mutating method on `supabaseAdmin`" (e.g. a lint rule or a runtime assertion), since it's the kind of bug that's invisible until a second concurrent user hits the server.
 - **No background job worker** — `GET /jobs/:id` polls Azure synchronously, on-demand, inside the request handler. That satisfies the stated requirement, but a production version processing high volume would likely want a background poller (or Azure webhook, if the API ever supports one) updating `document_jobs` independently of client polling, so jobs make progress even if no one is polling.
-- **No billing/payment provider integration** — `subscriptions` are modeled and readable, but nothing creates/upgrades a subscription (no Stripe or similar webhook handler yet). Signing up currently leaves an org with no `subscriptions` row, i.e. on the implicit free tier by design.
 - **Team management is not implemented** — `profiles.role` (`owner/admin/member`) exists in the schema and RLS, but there's no invite-teammate / change-role endpoint yet.
 - **Rate limiting is single-instance/in-memory** — fine for one server process; needs a shared store (Redis) before horizontal scaling.
+- **No real Stripe webhook endpoint registered, and no plan-downgrade enforcement** — §9's webhook sync is verified with self-signed test events (no Stripe CLI in this sandbox), not a live-registered endpoint receiving real Stripe traffic yet; that's the next thing to wire up once there's a public URL. Also, nothing currently re-checks an org's *existing* `document_jobs`/usage against a *new, lower* plan after a downgrade or cancellation — quota is only ever checked at upload time against whatever the current plan is.
+- **No idempotency/replay protection beyond Stripe's own signature+timestamp check** — `handleStripeWebhookEvent` doesn't record processed `event.id`s, so if Stripe redelivers the same event (which it does on retries, and can occasionally do even after a `200`), it gets reprocessed. Harmless here since the sync is a pure upsert-by-`stripe_subscription_id` (reprocessing just re-writes the same values), but worth knowing if a future event handler ever does something non-idempotent (e.g. sending an email per event).
 - **`scripts/test-e2e-azure.ts` leaves test data behind** — each run creates a new timestamped test user/org (no cleanup step), so the live Supabase project will accumulate `e2e-test-*` users/orgs and their document_jobs over repeated runs. Harmless for a dev/staging project (each run gets a fresh free-tier org, well under quota) but worth periodically clearing out, or extending the script with a teardown step, before this project has real customer data alongside it.
 
-**To resume work**, the next most valuable steps in order would be: (1) add the Stripe (or similar) webhook to actually create/update `subscriptions` rows, (2) add tests around the quota logic and the auth-client-isolation bug from §8 before touching either further, (3) add a background poller so jobs progress without a client actively polling, (4) build the teardown/cleanup step for the E2E test script.
+**To resume work**, the next most valuable steps in order would be: (1) register a real Stripe webhook endpoint (via `stripe listen` locally or a real deployed URL) and confirm live-delivered events sync the same way the self-signed test events did in §9, (2) add tests around the quota logic and the auth-client-isolation bug from §8 before touching either further, (3) add a background poller so jobs progress without a client actively polling, (4) build the teardown/cleanup step for the E2E test script.

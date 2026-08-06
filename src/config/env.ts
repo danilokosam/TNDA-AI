@@ -22,6 +22,11 @@ const envSchema = z.object({
   RATE_LIMIT_MAX_REQUESTS: z.coerce.number().int().positive().default(100),
 
   MAX_UPLOAD_SIZE_MB: z.coerce.number().int().positive().default(50),
+
+  STRIPE_SECRET_KEY: z.string().min(1),
+  STRIPE_WEBHOOK_SECRET: z.string().min(1),
+  STRIPE_PRICE_ID_BASIC: z.string().min(1),
+  STRIPE_PRICE_ID_PRO: z.string().min(1),
 });
 
 export type Env = z.infer<typeof envSchema>;
