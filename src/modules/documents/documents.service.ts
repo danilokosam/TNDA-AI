@@ -2,10 +2,8 @@ import { env } from "@/config/env";
 import { inspectDocumentFile, type InspectedFile, type SupportedDocumentMimeType } from "@/utils/file-inspector";
 import { extractZipEntries } from "@/utils/zip";
 import { AppError, PayloadTooLargeError, QuotaExceededError, ValidationError } from "@/utils/errors";
-import {
-  beginDocumentAnalysis,
-  getAnalysisOperationStatus,
-} from "@/services/azure-document-intelligence.service";
+import { getAnalysisOperationStatus } from "@/services/azure-document-intelligence.service";
+import { getProcessingStrategy, type DocumentType } from "@/modules/documents/documents.strategy";
 import { getEffectivePlan } from "@/modules/organization/organization.service";
 import { getDocumentsSubmittedSince, getMonthlyPagesUsed, type PlanRow } from "@/modules/organization/organization.repository";
 import {
@@ -78,23 +76,30 @@ function checkMonthlyQuota(plan: PlanRow, quota: QuotaState, pageCount: number):
 }
 
 /**
- * Submits a persisted job's bytes to Azure and advances its status. On
- * failure the job is marked `failed` (so it's visible via the polling
- * endpoint) and the error is re-thrown for the caller to react to.
+ * Submits a persisted job's bytes for analysis via whichever processing
+ * strategy the requested `documentType` resolves to, and advances its
+ * status. On failure the job is marked `failed` (so it's visible via the
+ * polling endpoint) and the error is re-thrown for the caller to react to.
+ *
+ * This function itself has no idea which model or provider actually
+ * handles the document — that's entirely the resolved strategy's
+ * decision (see `documents.strategy.ts`).
  */
-async function submitToAzure(
+async function submitForAnalysis(
   jobId: string,
   bytes: Uint8Array,
   mimeType: SupportedDocumentMimeType,
+  documentType: DocumentType,
 ): Promise<DocumentJobRow> {
   try {
-    const { operationLocation } = await beginDocumentAnalysis(bytes, mimeType);
-    return await updateDocumentJob(jobId, { status: "processing", azure_operation_id: operationLocation });
+    const strategy = getProcessingStrategy(documentType);
+    const { operationReference } = await strategy.submit(bytes, mimeType);
+    return await updateDocumentJob(jobId, { status: "processing", azure_operation_id: operationReference });
   } catch (error) {
-    console.error("[documents.service] submitToAzure failed", { jobId, error });
+    console.error("[documents.service] submitForAnalysis failed", { jobId, documentType, error });
     await updateDocumentJob(jobId, {
       status: "failed",
-      error_message: errorMessage(error, "Failed to submit document to Azure Document Intelligence."),
+      error_message: errorMessage(error, "Failed to submit document for analysis."),
     });
     throw error;
   }
@@ -105,6 +110,7 @@ export async function processSingleDocument(
   userId: string,
   fileName: string,
   bytes: Uint8Array,
+  documentType: DocumentType,
 ): Promise<DocumentJobRow> {
   const inspected = await inspectDocumentFile(fileName, bytes);
   const { plan, periodStart } = await getEffectivePlan(organizationId);
@@ -140,7 +146,7 @@ export async function processSingleDocument(
     status: "pending",
   });
 
-  return submitToAzure(job.id, bytes, inspected.mimeType);
+  return submitForAnalysis(job.id, bytes, inspected.mimeType, documentType);
 }
 
 export interface BatchFileResult {
@@ -161,6 +167,7 @@ export async function processZipBatch(
   organizationId: string,
   userId: string,
   zipBytes: Uint8Array,
+  documentType: DocumentType,
 ): Promise<BatchResult> {
   const entries = extractZipEntries(zipBytes);
 
@@ -233,7 +240,7 @@ export async function processZipBatch(
     });
 
     try {
-      await submitToAzure(job.id, entry.bytes, inspected.mimeType);
+      await submitForAnalysis(job.id, entry.bytes, inspected.mimeType, documentType);
       quota.pagesUsed += inspected.pageCount;
       quota.documentsUsed += 1;
       results.push({ fileName: entry.fileName, status: "processing", jobId: job.id });
@@ -242,7 +249,7 @@ export async function processZipBatch(
         fileName: entry.fileName,
         status: "failed",
         jobId: job.id,
-        reason: errorMessage(error, "Azure submission failed."),
+        reason: errorMessage(error, "Document submission failed."),
       });
     }
   }
@@ -256,7 +263,12 @@ export type UploadResult =
   | { kind: "single"; job: DocumentJobRow }
   | { kind: "batch"; batch: BatchResult };
 
-export async function submitUpload(organizationId: string, userId: string, file: File): Promise<UploadResult> {
+export async function submitUpload(
+  organizationId: string,
+  userId: string,
+  file: File,
+  documentType: DocumentType,
+): Promise<UploadResult> {
   const maxUploadBytes = env.MAX_UPLOAD_SIZE_MB * 1024 * 1024;
   if (file.size > maxUploadBytes) {
     throw new PayloadTooLargeError(
@@ -267,10 +279,13 @@ export async function submitUpload(organizationId: string, userId: string, file:
   const bytes = new Uint8Array(await file.arrayBuffer());
 
   if (isZipFile(bytes)) {
-    return { kind: "batch", batch: await processZipBatch(organizationId, userId, bytes) };
+    return { kind: "batch", batch: await processZipBatch(organizationId, userId, bytes, documentType) };
   }
 
-  return { kind: "single", job: await processSingleDocument(organizationId, userId, file.name, bytes) };
+  return {
+    kind: "single",
+    job: await processSingleDocument(organizationId, userId, file.name, bytes, documentType),
+  };
 }
 
 /**

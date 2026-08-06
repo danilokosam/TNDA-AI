@@ -12,6 +12,5 @@ import { env } from "@/config/env";
 export const azureDocumentIntelligenceConfig = {
   endpoint: env.AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT.replace(/\/+$/, ""),
   apiKey: env.AZURE_DOCUMENT_INTELLIGENCE_API_KEY,
-  modelId: env.AZURE_DOCUMENT_INTELLIGENCE_MODEL_ID,
   apiVersion: "2024-11-30",
 } as const;

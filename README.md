@@ -19,7 +19,7 @@ This README documents the backend only. There is no frontend in this repository.
 | **Validation** | [Zod](https://zod.dev) | Every request body/params object is a Zod schema, passed straight into Elysia's `body`/`params` validators via the Standard Schema protocol. Full type inference, **zero `as` type assertions** anywhere in the application code (enforced by ESLint — see Testing & Code Quality below). |
 | **Database & Auth** | [Supabase](https://supabase.com) (PostgreSQL + Row Level Security) | Postgres with RLS policies scoped by `organization_id` as defense-in-depth; the backend itself talks to Postgres via the **service-role key** (bypasses RLS) and enforces tenant isolation explicitly in every repository query, since it's a trusted server context. |
 | **Billing** | [Stripe](https://stripe.com) (Checkout, Billing Portal, Webhooks) | Hosted Checkout Sessions for plan upgrades, the Billing Portal for self-service payment/invoice management, and a webhook endpoint that syncs subscription state (`created`/`updated`/`deleted`) back into `subscriptions`, keyed by `stripe_subscription_id` so events converge on one row regardless of delivery order. |
-| **External Integration** | Azure Document Intelligence — **REST API**, called directly via `fetch` | Implements the async `HTTP 202` submit/poll pattern by hand (see §Data Flow) rather than using the `@azure/ai-form-recognizer` SDK's poller, because this backend persists the operation location and resumes polling from a **separate, later HTTP request** — a shape the SDK's in-process poller isn't designed for. Includes exponential backoff + jitter on `429 Too Many Requests`. |
+| **External Integration** | Azure Document Intelligence — **REST API**, called directly via `fetch` | Implements the async `HTTP 202` submit/poll pattern by hand (see §Data Flow) rather than using the `@azure/ai-form-recognizer` SDK's poller, because this backend persists the operation location and resumes polling from a **separate, later HTTP request** — a shape the SDK's in-process poller isn't designed for. Includes exponential backoff + jitter on `429 Too Many Requests`. The adapter itself (`azure-document-intelligence.service.ts`) takes the Azure model ID as a parameter and has no opinion on which one to use — that decision belongs to the domain layer's strategy registry (`documents.strategy.ts`), not a global setting. |
 | **File Utilities** | `pdf-lib`, `fflate`, `file-type` | `pdf-lib` reads a PDF's page tree to get an exact page count **without rendering any page**; `fflate` decompresses `.zip` archives fully in memory (no temp files on disk); `file-type` sniffs a file's real MIME type from its magic bytes, so the pre-flight check never trusts a client-supplied `Content-Type` header. |
 | **Testing** | [Vitest](https://vitest.dev) (run via Bun) | Unit and in-process integration tests — real HTTP request/response cycles via Elysia's `.handle(request)`, no port ever bound. Dummy, non-secret env values live in `vitest.config.ts` itself, so the suite never needs real Supabase/Azure/Stripe credentials to run, locally or in CI. |
 | **Linting** | [ESLint](https://eslint.org) (flat config, `typescript-eslint`) | Formalizes this project's zero-`as`/zero-`any` convention as an enforced rule, not just a habit — `@typescript-eslint/consistent-type-assertions` and `no-explicit-any` are both errors in application code. |
@@ -38,7 +38,7 @@ backend/
 │   │   ├── env.ts                    #   Zod-validated process.env — the app refuses to boot on missing/invalid config
 │   │   ├── supabase.ts               #   Service-role Supabase client (supabaseAdmin) + createAuthClient() for password sign-in
 │   │   ├── database.types.ts         #   Hand-written Database type mirroring supabase/migrations/
-│   │   ├── azure.ts                  #   Azure Document Intelligence endpoint/key/model/api-version config
+│   │   ├── azure.ts                  #   Azure Document Intelligence endpoint/key/api-version config — deliberately no model ID (see documents.strategy.ts)
 │   │   └── stripe.ts                 #   Stripe client + plan-slug ↔ Price-ID mapping
 │   │
 │   ├── modules/                      # Domain modules — one folder per bounded context
@@ -63,10 +63,12 @@ backend/
 │   │       ├── documents.routes.ts
 │   │       ├── documents.service.ts
 │   │       ├── documents.repository.ts
-│   │       └── documents.schema.ts
+│   │       ├── documents.schema.ts
+│   │       ├── documents.strategy.ts         # Document-type → processing-strategy registry (owns model selection)
+│   │       └── documents.strategy.test.ts
 │   │
 │   ├── services/                     # External API adapters (integrations outside our own DB)
-│   │   └── azure-document-intelligence.service.ts   # Submit + poll Azure DI over REST, with 429 backoff
+│   │   └── azure-document-intelligence.service.ts   # Pure Azure REST adapter — submit + poll, 429 backoff, no model opinion
 │   │
 │   ├── middlewares/                  # Cross-cutting HTTP concerns, applied as Elysia plugins
 │   │   ├── auth.middleware.ts        #   Verifies Supabase bearer token, injects { userId, organizationId, role }
@@ -118,7 +120,7 @@ backend/
 | billing | `POST /api/v1/billing/checkout` | Bearer | Creates a Stripe Checkout Session (`{ planId: 'basic'\|'pro', redirectUrl? }` → `{ url }`) |
 | billing | `POST /api/v1/billing/portal` | Bearer | Creates a Stripe Billing Portal session (`{ returnUrl? }` → `{ url }`) |
 | billing | `POST /api/v1/billing/webhook` | **public** — Stripe signature, not bearer | Receives `checkout.session.completed` / `customer.subscription.created`\|`updated`\|`deleted`, syncs `subscriptions` |
-| documents | `POST /api/v1/documents` | Bearer | Multipart upload — single file **or** `.zip` batch |
+| documents | `POST /api/v1/documents` | Bearer | Multipart upload — single file **or** `.zip` batch, with an optional `documentType` field (`invoice`\|`receipt`\|`identity_document`\|`generic`, defaults to `invoice`) selecting the processing strategy |
 | documents | `GET /api/v1/documents/jobs/:id` | Bearer | Polls job status, pulling a fresh status from Azure if still in flight |
 
 Swagger UI is mounted at `/docs`.
@@ -177,7 +179,27 @@ Before a single byte is sent to Azure, every uploaded file goes through:
 - The organization's usage baseline is fetched **once** per batch, then a running in-memory quota counter is incremented as each file is accepted — this is what stops many small files inside a single archive from cumulatively exceeding the monthly quota even though each one looks fine in isolation against the initial database snapshot.
 - Each file in the archive independently ends up as one of: `processing`, `rejected` (bad type/corrupt/too large), `rejected_quota` (would exceed quota), or `failed` (Azure submission error) — one bad file never aborts the rest of the batch. The response returns granular per-file status.
 
-### 4. Azure Integration — HTTP 202 Async Pattern (`azure-document-intelligence.service.ts`)
+### 4. Document Type → Processing Strategy, then the HTTP 202 Async Pattern
+
+**Strategy resolution (`documents.strategy.ts`, domain layer):**
+
+```
+requested documentType ("invoice" | "receipt" | "identity_document" | "generic")
+      │
+      ▼
+getProcessingStrategy(documentType)   — looks up a Record<DocumentType, DocumentProcessingStrategy>
+      │
+      ▼
+strategy.submit(bytes, mimeType)
+      │  today, every strategy is "call Azure with a specific prebuilt model" —
+      │  invoice → prebuilt-invoice, receipt → prebuilt-receipt,
+      │  identity_document → prebuilt-idDocument, generic → prebuilt-layout
+      ▼
+```
+
+This is the layer that decides *which* model (or, in the future, provider) handles a document — not `azure-document-intelligence.service.ts`, and not a global config value. Adding a new document type, repointing one at a different Azure model, or swapping a strategy to a different provider entirely (or a multi-step Azure+LLM pipeline) only touches this one file; `documents.service.ts`, the routes, and the Azure REST adapter are unaffected either way. (Status polling and the `document_jobs.azure_operation_id` column still assume Azure's Operation-Location model specifically — that part hasn't been generalized, since every strategy today is still Azure-backed.)
+
+**Then the actual submission (`azure-document-intelligence.service.ts` — a pure Azure REST adapter, takes the model ID as a parameter, has no opinion on which one to use):**
 
 ```
 1. POST {endpoint}/documentModels/{modelId}:analyze   (raw file bytes, Ocp-Apim-Subscription-Key header)

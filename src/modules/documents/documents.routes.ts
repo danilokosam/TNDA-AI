@@ -32,7 +32,12 @@ export const documentsRoutes = new Elysia({ prefix: "/api/v1/documents" })
   .post(
     "/",
     async ({ auth, body, set }) => {
-      const result = await documentsService.submitUpload(auth.organizationId, auth.userId, body.file);
+      const result = await documentsService.submitUpload(
+        auth.organizationId,
+        auth.userId,
+        body.file,
+        body.documentType,
+      );
       set.status = 202;
 
       if (result.kind === "single") {

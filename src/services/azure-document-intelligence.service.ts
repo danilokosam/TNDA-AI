@@ -50,12 +50,18 @@ export interface AzureAnalysisSubmission {
  * only the `Operation-Location` URL — the caller persists it on the
  * `document_jobs` row and polls it later via `getAnalysisOperationStatus`,
  * potentially from a completely separate request.
+ *
+ * `modelId` is a required parameter, not a config value: this module is a
+ * pure infrastructure adapter for Azure's REST API and has no opinion on
+ * *which* model a document should be analyzed with — that decision belongs
+ * to the domain layer (see `src/modules/documents/documents.strategy.ts`).
  */
 export async function beginDocumentAnalysis(
   bytes: Uint8Array,
   contentType: SupportedDocumentMimeType,
+  modelId: string,
 ): Promise<AzureAnalysisSubmission> {
-  const url = `${azureDocumentIntelligenceConfig.endpoint}/documentintelligence/documentModels/${azureDocumentIntelligenceConfig.modelId}:analyze?api-version=${azureDocumentIntelligenceConfig.apiVersion}`;
+  const url = `${azureDocumentIntelligenceConfig.endpoint}/documentintelligence/documentModels/${modelId}:analyze?api-version=${azureDocumentIntelligenceConfig.apiVersion}`;
 
   const response = await fetchWithRetry(url, {
     method: "POST",

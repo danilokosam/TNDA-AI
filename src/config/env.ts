@@ -16,7 +16,6 @@ const envSchema = z.object({
 
   AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT: z.string().url(),
   AZURE_DOCUMENT_INTELLIGENCE_API_KEY: z.string().min(1),
-  AZURE_DOCUMENT_INTELLIGENCE_MODEL_ID: z.string().min(1).default("prebuilt-invoice"),
 
   RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
   RATE_LIMIT_MAX_REQUESTS: z.coerce.number().int().positive().default(100),
