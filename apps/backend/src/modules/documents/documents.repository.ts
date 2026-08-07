@@ -65,7 +65,38 @@ export async function updateDocumentJob(
   return data;
 }
 
+/** Excludes soft-deleted jobs — a deleted job is not viewable or actionable through this lookup. */
 export async function getDocumentJobForOrganization(
+  id: string,
+  organizationId: string,
+): Promise<DocumentJobRow> {
+  const { data, error } = await supabaseAdmin
+    .from("document_jobs")
+    .select("*")
+    .eq("id", id)
+    .eq("organization_id", organizationId)
+    .is("deleted_at", null)
+    .maybeSingle();
+
+  if (error) {
+    throw new AppError(500, "INTERNAL_ERROR", error.message);
+  }
+
+  if (!data) {
+    throw new NotFoundError("Document job not found.");
+  }
+
+  return data;
+}
+
+/**
+ * Same lookup, but deliberately does NOT exclude soft-deleted jobs — used
+ * only by the file-lifecycle service functions (`removeDocumentFile`,
+ * `deleteDocument`), which need to find and act on a job regardless of
+ * whether it's already been soft-deleted, so a repeated delete call stays
+ * idempotent rather than 404ing on the second attempt.
+ */
+export async function getDocumentJobForOrganizationIncludingDeleted(
   id: string,
   organizationId: string,
 ): Promise<DocumentJobRow> {
@@ -125,6 +156,7 @@ export async function listDocumentJobsForOrganization(
     .from("document_jobs")
     .select("*")
     .eq("organization_id", organizationId)
+    .is("deleted_at", null)
     .order("created_at", { ascending: false })
     .limit(filters.limit + 1);
 

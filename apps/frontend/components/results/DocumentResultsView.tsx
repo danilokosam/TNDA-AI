@@ -1,7 +1,19 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { CircleAlert, CircleCheck, CircleX, Clock, LoaderCircle, type LucideIcon } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -9,6 +21,7 @@ import { DocumentFieldsTable } from "@/components/results/DocumentFieldsTable";
 import { DocumentPreviewPanel } from "@/components/results/DocumentPreviewPanel";
 import { DocumentRawContent } from "@/components/results/DocumentRawContent";
 import { extractEffectiveFields, extractRawContent, isMarkdownContent } from "@/features/results/extract-fields";
+import { useDeleteDocument, useRemoveDocumentFile } from "@/features/documents/hooks";
 import { useConfirmReview, useFieldCorrections, useRejectReview, useSaveCorrections } from "@/features/results/hooks";
 import { useJobStatus } from "@/features/upload/hooks";
 import { ApiError } from "@/lib/api/response";
@@ -45,11 +58,14 @@ function mutationErrorMessage(error: unknown): string {
  * is what skips fetching corrections for a job with nothing to correct yet.
  */
 export function DocumentResultsView({ jobId }: DocumentResultsViewProps) {
+  const router = useRouter();
   const { data: job, isLoading, isError } = useJobStatus(jobId);
   const { data: corrections } = useFieldCorrections(jobId, job?.status === "completed");
   const saveCorrections = useSaveCorrections();
   const confirmReview = useConfirmReview();
   const rejectReview = useRejectReview();
+  const removeFile = useRemoveDocumentFile();
+  const deleteDocument = useDeleteDocument();
   const [draft, setDraft] = useState<Record<string, string>>({});
   // Resets the draft when `jobId` changes — adjusted during render (React's
   // documented pattern for this), not an effect: there's no external system
@@ -111,8 +127,14 @@ export function DocumentResultsView({ jobId }: DocumentResultsViewProps) {
   const reviewDisplay = REVIEW_STATUS_DISPLAY[job.reviewStatus];
   const ReviewIcon = reviewDisplay.icon;
   const isDirty = Object.keys(draft).length > 0;
-  const isMutating = saveCorrections.isPending || confirmReview.isPending || rejectReview.isPending;
-  const mutationError = saveCorrections.error ?? confirmReview.error ?? rejectReview.error;
+  const isMutating =
+    saveCorrections.isPending ||
+    confirmReview.isPending ||
+    rejectReview.isPending ||
+    removeFile.isPending ||
+    deleteDocument.isPending;
+  const mutationError =
+    saveCorrections.error ?? confirmReview.error ?? rejectReview.error ?? removeFile.error ?? deleteDocument.error;
 
   const handleFieldChange = (name: string, value: string) => {
     setDraft((previous) => ({ ...previous, [name]: value }));
@@ -128,6 +150,14 @@ export function DocumentResultsView({ jobId }: DocumentResultsViewProps) {
 
   const handleReject = () => {
     rejectReview.mutate({ jobId, corrections: draft }, { onSuccess: () => setDraft({}) });
+  };
+
+  const handleRemoveFile = () => {
+    removeFile.mutate(jobId);
+  };
+
+  const handleDeleteDocument = () => {
+    deleteDocument.mutate(jobId, { onSuccess: () => router.push("/documents") });
   };
 
   return (
@@ -154,6 +184,54 @@ export function DocumentResultsView({ jobId }: DocumentResultsViewProps) {
           <Button variant="destructive" size="sm" disabled={isMutating} onClick={handleReject}>
             {rejectReview.isPending ? "Rejecting…" : "Reject"}
           </Button>
+
+          <div className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
+
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button variant="outline" size="sm" disabled={isMutating}>
+                Remove file
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Remove the original file?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  Deletes the uploaded file from storage. Extracted fields, corrections, and the review status stay
+                  exactly as they are — only the file preview stops being available.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction variant="destructive" onClick={handleRemoveFile}>
+                  Remove file
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button variant="destructive" size="sm" disabled={isMutating}>
+                Delete document
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Delete this document?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  Hides it everywhere (History, Dashboard) and removes its original file. The extracted data is kept,
+                  not erased — this isn&apos;t something you can undo from here, though.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction variant="destructive" onClick={handleDeleteDocument}>
+                  Delete document
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </div>
       </div>
 

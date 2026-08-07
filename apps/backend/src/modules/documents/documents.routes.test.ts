@@ -14,6 +14,7 @@ vi.mock("@/config/supabase", () => ({
 vi.mock("@/modules/documents/documents.repository", () => ({
   createDocumentJob: vi.fn(),
   getDocumentJobForOrganization: vi.fn(),
+  getDocumentJobForOrganizationIncludingDeleted: vi.fn(),
   updateDocumentJob: vi.fn(),
   listDocumentJobsForOrganization: vi.fn(),
   listFieldCorrections: vi.fn(),
@@ -22,6 +23,7 @@ vi.mock("@/modules/documents/documents.repository", () => ({
 
 vi.mock("@/services/storage.service", () => ({
   createSignedPreviewUrl: vi.fn(),
+  deleteDocumentFile: vi.fn(),
 }));
 
 const { supabaseAdmin } = await import("@/config/supabase");
@@ -111,6 +113,7 @@ function jobRow(overrides: Partial<DocumentJobRow> = {}): DocumentJobRow {
     review_status: "unreviewed",
     reviewed_by: null,
     reviewed_at: null,
+    deleted_at: null,
     error_message: null,
     created_at: "2026-01-15T00:00:00.000Z",
     updated_at: "2026-01-15T00:00:05.000Z",
@@ -464,5 +467,74 @@ describe("POST /api/v1/documents/jobs/:id/reject", () => {
     expect(response.status).toBe(200);
     const body = jobDtoSchema.parse(await response.json());
     expect(body.reviewStatus).toBe("rejected");
+  });
+});
+
+describe("DELETE /api/v1/documents/jobs/:id/file", () => {
+  it("returns 401 without a bearer token", async () => {
+    const response = await app.handle(new Request(`${JOB_URL}/file`, { method: "DELETE" }));
+    expect(response.status).toBe(401);
+  });
+
+  it("removes the file when called by the uploader", async () => {
+    mockAuthenticated({ ...TEST_PROFILE, id: "user_1" });
+    vi.mocked(documentsRepository.getDocumentJobForOrganizationIncludingDeleted).mockResolvedValue(
+      jobRow({ user_id: "user_1", storage_path: "org_1/job_1/invoice.pdf" }),
+    );
+    vi.mocked(documentsRepository.updateDocumentJob).mockResolvedValue(jobRow({ storage_path: null }));
+
+    const response = await app.handle(new Request(`${JOB_URL}/file`, { method: "DELETE", headers: AUTH_HEADERS }));
+
+    expect(response.status).toBe(200);
+    expect(storageService.deleteDocumentFile).toHaveBeenCalledWith("org_1/job_1/invoice.pdf");
+    const body = jobDtoSchema.parse(await response.json());
+    expect(body.jobId).toBe("job_1");
+  });
+
+  it("returns 403 for a member who neither uploaded it nor is an owner/admin", async () => {
+    mockAuthenticated({ id: "user_2", organization_id: "org_1", email: "member@example.com", role: "member" });
+    vi.mocked(documentsRepository.getDocumentJobForOrganizationIncludingDeleted).mockResolvedValue(
+      jobRow({ user_id: "user_1", storage_path: "org_1/job_1/invoice.pdf" }),
+    );
+
+    const response = await app.handle(new Request(`${JOB_URL}/file`, { method: "DELETE", headers: AUTH_HEADERS }));
+
+    expect(response.status).toBe(403);
+    expect(storageService.deleteDocumentFile).not.toHaveBeenCalled();
+  });
+});
+
+describe("DELETE /api/v1/documents/jobs/:id", () => {
+  it("returns 401 without a bearer token", async () => {
+    const response = await app.handle(new Request(JOB_URL, { method: "DELETE" }));
+    expect(response.status).toBe(401);
+  });
+
+  it("soft-deletes the document when called by the uploader", async () => {
+    mockAuthenticated({ ...TEST_PROFILE, id: "user_1" });
+    vi.mocked(documentsRepository.getDocumentJobForOrganizationIncludingDeleted).mockResolvedValue(
+      jobRow({ user_id: "user_1", storage_path: null }),
+    );
+    vi.mocked(documentsRepository.updateDocumentJob).mockResolvedValue(
+      jobRow({ deleted_at: "2026-01-20T00:00:00.000Z" }),
+    );
+
+    const response = await app.handle(new Request(JOB_URL, { method: "DELETE", headers: AUTH_HEADERS }));
+
+    expect(response.status).toBe(200);
+    const body = z.object({ jobId: z.string() }).parse(await response.json());
+    expect(body.jobId).toBe("job_1");
+  });
+
+  it("returns 403 for a member who neither uploaded it nor is an owner/admin", async () => {
+    mockAuthenticated({ id: "user_2", organization_id: "org_1", email: "member@example.com", role: "member" });
+    vi.mocked(documentsRepository.getDocumentJobForOrganizationIncludingDeleted).mockResolvedValue(
+      jobRow({ user_id: "user_1" }),
+    );
+
+    const response = await app.handle(new Request(JOB_URL, { method: "DELETE", headers: AUTH_HEADERS }));
+
+    expect(response.status).toBe(403);
+    expect(documentsRepository.updateDocumentJob).not.toHaveBeenCalled();
   });
 });

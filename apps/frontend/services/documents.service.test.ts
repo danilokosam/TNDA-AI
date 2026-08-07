@@ -5,6 +5,7 @@ import {
   documentsListResponseSchema,
   previewUrlResponseSchema,
   fieldCorrectionsResponseSchema,
+  deleteDocumentResponseSchema,
   type JobDto,
   type DocumentsListResponse,
   type PreviewUrlResponse,
@@ -29,6 +30,8 @@ const {
   saveFieldCorrections,
   confirmDocumentReview,
   rejectDocumentReview,
+  removeDocumentFile,
+  deleteDocument,
 } = await import("@/services/documents.service");
 
 function jobDtoFixture(overrides: Partial<JobDto> = {}): JobDto {
@@ -289,5 +292,35 @@ describe("rejectDocumentReview", () => {
     expect(path).toBe("/api/v1/documents/jobs/job_42/reject");
     expect(schema).toBe(jobDtoSchema);
     expect(options?.method).toBe("POST");
+  });
+});
+
+describe("removeDocumentFile", () => {
+  it("DELETEs /api/v1/documents/jobs/:id/file and returns the parsed job", async () => {
+    const job = jobDtoFixture({ jobId: "job_42" });
+    vi.mocked(backendFetch).mockResolvedValue(job);
+
+    const returned = await removeDocumentFile("job_42");
+
+    expect(returned).toEqual(job);
+    const [path, schema, options] = vi.mocked(backendFetch).mock.calls[0]!;
+    expect(path).toBe("/api/v1/documents/jobs/job_42/file");
+    expect(schema).toBe(jobDtoSchema);
+    expect(options?.method).toBe("DELETE");
+    expect(options?.accessToken).toBe("test-access-token");
+  });
+});
+
+describe("deleteDocument", () => {
+  it("DELETEs /api/v1/documents/jobs/:id and returns the parsed confirmation", async () => {
+    vi.mocked(backendFetch).mockResolvedValue({ jobId: "job_42" });
+
+    const returned = await deleteDocument("job_42");
+
+    expect(returned).toEqual({ jobId: "job_42" });
+    const [path, schema, options] = vi.mocked(backendFetch).mock.calls[0]!;
+    expect(path).toBe("/api/v1/documents/jobs/job_42");
+    expect(schema).toBe(deleteDocumentResponseSchema);
+    expect(options?.method).toBe("DELETE");
   });
 });

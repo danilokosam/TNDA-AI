@@ -2,15 +2,17 @@ import { env } from "@/config/env";
 import { inspectDocumentFile, type InspectedFile, type SupportedDocumentMimeType } from "@/utils/file-inspector";
 import { extractZipEntries } from "@/utils/zip";
 import { computeAverageConfidence } from "@/utils/confidence";
-import { AppError, ConflictError, PayloadTooLargeError, QuotaExceededError, ValidationError } from "@/utils/errors";
+import { AppError, ConflictError, ForbiddenError, PayloadTooLargeError, QuotaExceededError, ValidationError } from "@/utils/errors";
 import { getAnalysisOperationStatus } from "@/services/azure-document-intelligence.service";
-import { buildStoragePath, createSignedPreviewUrl, uploadDocumentFile } from "@/services/storage.service";
+import { buildStoragePath, createSignedPreviewUrl, deleteDocumentFile, uploadDocumentFile } from "@/services/storage.service";
 import { getProcessingStrategy, type DocumentType } from "@/modules/documents/documents.strategy";
 import { getEffectivePlan } from "@/modules/organization/organization.service";
 import { getDocumentsSubmittedSince, getMonthlyPagesUsed, type PlanRow } from "@/modules/organization/organization.repository";
+import type { ProfileRole } from "@/config/database.types";
 import {
   createDocumentJob,
   getDocumentJobForOrganization,
+  getDocumentJobForOrganizationIncludingDeleted,
   insertFieldCorrections,
   listDocumentJobsForOrganization,
   listFieldCorrections,
@@ -565,4 +567,82 @@ export function rejectDocumentReview(
   corrections?: Record<string, string>,
 ): Promise<DocumentJobRow> {
   return setDocumentReview(organizationId, jobId, userId, "rejected", corrections);
+}
+
+/**
+ * File/document deletion is restricted to the job's own uploader or an org
+ * owner/admin — unlike review actions (edit/confirm/reject), which are
+ * open to any org member (§4 of the review-workflow plan): these are
+ * destructive, so they get the stricter gate.
+ */
+function assertCanManageFile(job: DocumentJobRow, userId: string, role: ProfileRole): void {
+  const isUploader = job.user_id === userId;
+  const isOwnerOrAdmin = role === "owner" || role === "admin";
+
+  if (!isUploader && !isOwnerOrAdmin) {
+    throw new ForbiddenError("Only the person who uploaded this document, or an organization owner/admin, can do this.");
+  }
+}
+
+/**
+ * Hard-deletes the original file from Storage, leaves everything else on
+ * the job row untouched (result_json, correction history, review status).
+ * Idempotent: a job with no `storage_path` is a no-op, not an error. Uses
+ * the "including deleted" lookup so this also works, harmlessly, on a job
+ * whose document was already deleted (its file is already gone by then
+ * anyway — see `deleteDocument`).
+ */
+export async function removeDocumentFile(
+  organizationId: string,
+  jobId: string,
+  userId: string,
+  role: ProfileRole,
+): Promise<DocumentJobRow> {
+  const job = await getDocumentJobForOrganizationIncludingDeleted(jobId, organizationId);
+  assertCanManageFile(job, userId, role);
+
+  if (!job.storage_path) {
+    return job;
+  }
+
+  await deleteDocumentFile(job.storage_path);
+  return updateDocumentJob(job.id, { storage_path: null });
+}
+
+/**
+ * Soft-deletes the job (`deleted_at`) and removes its original file at the
+ * same time — leaving orphaned bytes in Storage once a job is hidden from
+ * every view serves no purpose. The row and everything on it (result_json,
+ * full correction history) is always preserved; "deleted" means hidden,
+ * never actually gone. Idempotent: a no-op on a job that's already
+ * deleted. Storage deletion is best-effort/non-fatal here (same tier of
+ * caution as the upload-time write in `persistOriginalFile`) — a Storage
+ * hiccup shouldn't block the primary, user-facing effect of the document
+ * disappearing from view.
+ */
+export async function deleteDocument(
+  organizationId: string,
+  jobId: string,
+  userId: string,
+  role: ProfileRole,
+): Promise<DocumentJobRow> {
+  const job = await getDocumentJobForOrganizationIncludingDeleted(jobId, organizationId);
+  assertCanManageFile(job, userId, role);
+
+  if (job.deleted_at) {
+    return job;
+  }
+
+  if (job.storage_path) {
+    try {
+      await deleteDocumentFile(job.storage_path);
+    } catch (error) {
+      console.error("[documents.service] failed to remove the file while deleting the document", {
+        jobId: job.id,
+        error,
+      });
+    }
+  }
+
+  return updateDocumentJob(job.id, { storage_path: null, deleted_at: new Date().toISOString() });
 }

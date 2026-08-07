@@ -1,11 +1,16 @@
-import { describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createQueryWrapper } from "../../test/query-client-wrapper";
 import type { JobDto } from "@/types/api";
 
 vi.mock("@/lib/api/http", () => ({
   apiFetch: vi.fn(),
+}));
+
+const mockPush = vi.fn();
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: mockPush }),
 }));
 
 const { apiFetch } = await import("@/lib/api/http");
@@ -30,6 +35,10 @@ function jobFixture(overrides: Partial<JobDto> = {}): JobDto {
     ...overrides,
   };
 }
+
+beforeEach(() => {
+  mockPush.mockClear();
+});
 
 describe("DocumentResultsView", () => {
   it("shows a loading state before the job data arrives", () => {
@@ -332,5 +341,128 @@ describe("DocumentResultsView — review workflow", () => {
     await user.click(screen.getByRole("button", { name: /^confirm$/i }));
 
     expect(await screen.findByText("This document hasn't finished processing yet.")).toBeInTheDocument();
+  });
+});
+
+describe("DocumentResultsView — file lifecycle", () => {
+  function fieldShapedJob(overrides: Partial<JobDto> = {}): JobDto {
+    return jobFixture({
+      status: "completed",
+      resultJson: { documents: [{ fields: { Total: { content: "$50.00", confidence: 0.9 } } }] },
+      ...overrides,
+    });
+  }
+
+  function mockApiFetch(handlers: Array<[pathSuffix: string, method: string | undefined, response: unknown]>) {
+    vi.mocked(apiFetch).mockImplementation(async (path: unknown, _schema: unknown, init?: RequestInit) => {
+      const p = path as string;
+      const method = init?.method;
+      const handler = handlers.find(([suffix, m]) => p.endsWith(suffix) && m === method);
+      if (!handler) throw new Error(`Unmocked apiFetch call: ${method ?? "GET"} ${p}`);
+      return handler[2];
+    });
+  }
+
+  it("shows Remove file and Delete document actions for a completed document", async () => {
+    mockApiFetch([
+      ["/documents/job_1", undefined, fieldShapedJob()],
+      ["/corrections", undefined, { effective: {}, history: [] }],
+      ["/preview-url", undefined, { url: null }],
+    ]);
+
+    render(<DocumentResultsView jobId="job_1" />, { wrapper: createQueryWrapper() });
+
+    await screen.findByText("Total");
+    expect(screen.getByRole("button", { name: /^remove file$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^delete document$/i })).toBeInTheDocument();
+  });
+
+  it("does nothing until the Remove file confirmation is accepted", async () => {
+    mockApiFetch([
+      ["/documents/job_1", undefined, fieldShapedJob()],
+      ["/corrections", undefined, { effective: {}, history: [] }],
+      ["/preview-url", undefined, { url: null }],
+    ]);
+    const user = userEvent.setup();
+
+    render(<DocumentResultsView jobId="job_1" />, { wrapper: createQueryWrapper() });
+
+    await screen.findByText("Total");
+    await user.click(screen.getByRole("button", { name: /^remove file$/i }));
+    const dialog = await screen.findByRole("alertdialog");
+    await user.click(within(dialog).getByRole("button", { name: /cancel/i }));
+
+    expect(vi.mocked(apiFetch).mock.calls.some(([, , init]) => (init as RequestInit | undefined)?.method === "DELETE")).toBe(
+      false,
+    );
+  });
+
+  it("Remove file: DELETEs .../file once confirmed", async () => {
+    mockApiFetch([
+      ["/documents/job_1", undefined, fieldShapedJob()],
+      ["/corrections", undefined, { effective: {}, history: [] }],
+      ["/preview-url", undefined, { url: null }],
+      ["/file", "DELETE", fieldShapedJob()],
+    ]);
+    const user = userEvent.setup();
+
+    render(<DocumentResultsView jobId="job_1" />, { wrapper: createQueryWrapper() });
+
+    await screen.findByText("Total");
+    await user.click(screen.getByRole("button", { name: /^remove file$/i }));
+    const dialog = await screen.findByRole("alertdialog");
+    await user.click(within(dialog).getByRole("button", { name: /^remove file$/i }));
+
+    await waitFor(() => {
+      expect(
+        vi.mocked(apiFetch).mock.calls.some(
+          ([path, , init]) => (path as string).endsWith("/file") && (init as RequestInit | undefined)?.method === "DELETE",
+        ),
+      ).toBe(true);
+    });
+  });
+
+  it("Delete document: DELETEs the job and navigates to /documents once confirmed", async () => {
+    mockApiFetch([
+      ["/documents/job_1", undefined, fieldShapedJob()],
+      ["/corrections", undefined, { effective: {}, history: [] }],
+      ["/preview-url", undefined, { url: null }],
+      ["job_1", "DELETE", { jobId: "job_1" }],
+    ]);
+    const user = userEvent.setup();
+
+    render(<DocumentResultsView jobId="job_1" />, { wrapper: createQueryWrapper() });
+
+    await screen.findByText("Total");
+    await user.click(screen.getByRole("button", { name: /^delete document$/i }));
+    const dialog = await screen.findByRole("alertdialog");
+    await user.click(within(dialog).getByRole("button", { name: /^delete document$/i }));
+
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith("/documents"));
+  });
+
+  it("shows an inline error when a delete action fails", async () => {
+    const { ApiError } = await import("@/lib/api/response");
+    vi.mocked(apiFetch).mockImplementation(async (path: unknown, _schema: unknown, init?: RequestInit) => {
+      const p = path as string;
+      const method = init?.method;
+      if (p.endsWith("/file") && method === "DELETE") {
+        throw new ApiError(403, "FORBIDDEN", "Only the uploader or an owner/admin can do this.");
+      }
+      if (p.endsWith("/documents/job_1")) return fieldShapedJob();
+      if (p.endsWith("/corrections")) return { effective: {}, history: [] };
+      if (p.endsWith("/preview-url")) return { url: null };
+      throw new Error(`Unmocked apiFetch call: ${method ?? "GET"} ${p}`);
+    });
+    const user = userEvent.setup();
+
+    render(<DocumentResultsView jobId="job_1" />, { wrapper: createQueryWrapper() });
+
+    await screen.findByText("Total");
+    await user.click(screen.getByRole("button", { name: /^remove file$/i }));
+    const dialog = await screen.findByRole("alertdialog");
+    await user.click(within(dialog).getByRole("button", { name: /^remove file$/i }));
+
+    expect(await screen.findByText("Only the uploader or an owner/admin can do this.")).toBeInTheDocument();
   });
 });

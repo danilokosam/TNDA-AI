@@ -15,6 +15,7 @@ vi.mock("@/modules/documents/documents.repository", () => ({
   createDocumentJob: vi.fn(),
   updateDocumentJob: vi.fn(),
   getDocumentJobForOrganization: vi.fn(),
+  getDocumentJobForOrganizationIncludingDeleted: vi.fn(),
   listFieldCorrections: vi.fn(),
   insertFieldCorrections: vi.fn(),
 }));
@@ -23,6 +24,7 @@ vi.mock("@/services/storage.service", () => ({
   buildStoragePath: vi.fn(),
   uploadDocumentFile: vi.fn(),
   createSignedPreviewUrl: vi.fn(),
+  deleteDocumentFile: vi.fn(),
 }));
 
 const fileInspector = await import("@/utils/file-inspector");
@@ -31,8 +33,16 @@ const orgRepository = await import("@/modules/organization/organization.reposito
 const documentsRepository = await import("@/modules/documents/documents.repository");
 const documentsStrategy = await import("@/modules/documents/documents.strategy");
 const storageService = await import("@/services/storage.service");
-const { processSingleDocument, getDocumentPreviewUrl, getFieldCorrections, saveFieldCorrections, confirmDocumentReview, rejectDocumentReview } =
-  await import("@/modules/documents/documents.service");
+const {
+  processSingleDocument,
+  getDocumentPreviewUrl,
+  getFieldCorrections,
+  saveFieldCorrections,
+  confirmDocumentReview,
+  rejectDocumentReview,
+  removeDocumentFile,
+  deleteDocument,
+} = await import("@/modules/documents/documents.service");
 
 function planFixture() {
   return {
@@ -65,6 +75,7 @@ function jobFixture(overrides: Record<string, unknown> = {}) {
     review_status: "unreviewed",
     reviewed_by: null,
     reviewed_at: null,
+    deleted_at: null,
     created_at: "2026-01-01T00:00:00.000Z",
     updated_at: "2026-01-01T00:00:00.000Z",
     ...overrides,
@@ -322,6 +333,127 @@ describe("rejectDocumentReview", () => {
     expect(documentsRepository.updateDocumentJob).toHaveBeenCalledWith(
       "job_1",
       expect.objectContaining({ review_status: "rejected", reviewed_by: "user_1" }),
+    );
+  });
+});
+
+describe("removeDocumentFile", () => {
+  it("removes the file when called by the uploader", async () => {
+    vi.mocked(documentsRepository.getDocumentJobForOrganizationIncludingDeleted).mockResolvedValue(
+      jobFixture({ user_id: "user_1", storage_path: "org_1/job_1/invoice.pdf" }) as never,
+    );
+
+    const result = await removeDocumentFile("org_1", "job_1", "user_1", "member");
+
+    expect(storageService.deleteDocumentFile).toHaveBeenCalledWith("org_1/job_1/invoice.pdf");
+    expect(documentsRepository.updateDocumentJob).toHaveBeenCalledWith("job_1", { storage_path: null });
+    expect(result.storage_path).toBeNull();
+  });
+
+  it("removes the file when called by an org owner/admin who didn't upload it", async () => {
+    vi.mocked(documentsRepository.getDocumentJobForOrganizationIncludingDeleted).mockResolvedValue(
+      jobFixture({ user_id: "user_1", storage_path: "org_1/job_1/invoice.pdf" }) as never,
+    );
+
+    await removeDocumentFile("org_1", "job_1", "user_2", "owner");
+
+    expect(storageService.deleteDocumentFile).toHaveBeenCalled();
+  });
+
+  it("throws a forbidden error for a member who neither uploaded it nor is an owner/admin", async () => {
+    vi.mocked(documentsRepository.getDocumentJobForOrganizationIncludingDeleted).mockResolvedValue(
+      jobFixture({ user_id: "user_1", storage_path: "org_1/job_1/invoice.pdf" }) as never,
+    );
+
+    await expect(removeDocumentFile("org_1", "job_1", "user_2", "member")).rejects.toThrow();
+    expect(storageService.deleteDocumentFile).not.toHaveBeenCalled();
+  });
+
+  it("is idempotent — a no-op, not an error, when there's no file to remove", async () => {
+    vi.mocked(documentsRepository.getDocumentJobForOrganizationIncludingDeleted).mockResolvedValue(
+      jobFixture({ user_id: "user_1", storage_path: null }) as never,
+    );
+
+    await removeDocumentFile("org_1", "job_1", "user_1", "member");
+
+    expect(storageService.deleteDocumentFile).not.toHaveBeenCalled();
+    expect(documentsRepository.updateDocumentJob).not.toHaveBeenCalled();
+  });
+});
+
+describe("deleteDocument", () => {
+  it("removes the file and soft-deletes the job when called by the uploader", async () => {
+    vi.mocked(documentsRepository.getDocumentJobForOrganizationIncludingDeleted).mockResolvedValue(
+      jobFixture({ user_id: "user_1", storage_path: "org_1/job_1/invoice.pdf", deleted_at: null }) as never,
+    );
+
+    await deleteDocument("org_1", "job_1", "user_1", "member");
+
+    expect(storageService.deleteDocumentFile).toHaveBeenCalledWith("org_1/job_1/invoice.pdf");
+    expect(documentsRepository.updateDocumentJob).toHaveBeenCalledWith(
+      "job_1",
+      expect.objectContaining({ storage_path: null, deleted_at: expect.any(String) }),
+    );
+  });
+
+  it("soft-deletes when called by an org owner/admin who didn't upload it", async () => {
+    vi.mocked(documentsRepository.getDocumentJobForOrganizationIncludingDeleted).mockResolvedValue(
+      jobFixture({ user_id: "user_1", storage_path: null, deleted_at: null }) as never,
+    );
+
+    await deleteDocument("org_1", "job_1", "user_2", "admin");
+
+    expect(documentsRepository.updateDocumentJob).toHaveBeenCalledWith(
+      "job_1",
+      expect.objectContaining({ deleted_at: expect.any(String) }),
+    );
+  });
+
+  it("throws a forbidden error for a member who neither uploaded it nor is an owner/admin", async () => {
+    vi.mocked(documentsRepository.getDocumentJobForOrganizationIncludingDeleted).mockResolvedValue(
+      jobFixture({ user_id: "user_1", deleted_at: null }) as never,
+    );
+
+    await expect(deleteDocument("org_1", "job_1", "user_2", "member")).rejects.toThrow();
+    expect(documentsRepository.updateDocumentJob).not.toHaveBeenCalled();
+  });
+
+  it("is idempotent — a no-op when the job is already deleted", async () => {
+    vi.mocked(documentsRepository.getDocumentJobForOrganizationIncludingDeleted).mockResolvedValue(
+      jobFixture({ user_id: "user_1", deleted_at: "2026-01-20T00:00:00.000Z" }) as never,
+    );
+
+    await deleteDocument("org_1", "job_1", "user_1", "member");
+
+    expect(storageService.deleteDocumentFile).not.toHaveBeenCalled();
+    expect(documentsRepository.updateDocumentJob).not.toHaveBeenCalled();
+  });
+
+  it("does not attempt a storage call when there's no file to remove", async () => {
+    vi.mocked(documentsRepository.getDocumentJobForOrganizationIncludingDeleted).mockResolvedValue(
+      jobFixture({ user_id: "user_1", storage_path: null, deleted_at: null }) as never,
+    );
+
+    await deleteDocument("org_1", "job_1", "user_1", "member");
+
+    expect(storageService.deleteDocumentFile).not.toHaveBeenCalled();
+    expect(documentsRepository.updateDocumentJob).toHaveBeenCalledWith(
+      "job_1",
+      expect.objectContaining({ deleted_at: expect.any(String) }),
+    );
+  });
+
+  it("still soft-deletes the job even when the storage deletion call fails (non-fatal)", async () => {
+    vi.mocked(documentsRepository.getDocumentJobForOrganizationIncludingDeleted).mockResolvedValue(
+      jobFixture({ user_id: "user_1", storage_path: "org_1/job_1/invoice.pdf", deleted_at: null }) as never,
+    );
+    vi.mocked(storageService.deleteDocumentFile).mockRejectedValue(new Error("bucket unreachable"));
+
+    await deleteDocument("org_1", "job_1", "user_1", "member");
+
+    expect(documentsRepository.updateDocumentJob).toHaveBeenCalledWith(
+      "job_1",
+      expect.objectContaining({ deleted_at: expect.any(String) }),
     );
   });
 });

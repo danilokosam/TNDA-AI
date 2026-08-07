@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { AppError } from "@/utils/errors";
+import { AppError, NotFoundError } from "@/utils/errors";
 
 vi.mock("@/config/supabase", () => ({
   supabaseAdmin: { from: vi.fn() },
@@ -25,12 +25,14 @@ function createQueryBuilderMock(result: QueryResult) {
     select: vi.fn(() => chain),
     insert: vi.fn(() => chain),
     eq: vi.fn(() => chain),
+    is: vi.fn(() => chain),
     order: vi.fn(() => chain),
     limit: vi.fn(() => chain),
     ilike: vi.fn(() => chain),
     gte: vi.fn(() => chain),
     lte: vi.fn(() => chain),
     lt: vi.fn(() => chain),
+    maybeSingle: vi.fn(() => Promise.resolve(result)),
     then: (onfulfilled: (value: QueryResult) => unknown) => Promise.resolve(result).then(onfulfilled),
   };
   return chain;
@@ -63,6 +65,11 @@ function jobRow(overrides: Partial<Record<string, unknown>> = {}) {
     average_confidence: 0.9,
     result_json: null,
     error_message: null,
+    storage_path: null,
+    review_status: "unreviewed",
+    reviewed_by: null,
+    reviewed_at: null,
+    deleted_at: null,
     created_at: "2026-01-15T00:00:00.000Z",
     updated_at: "2026-01-15T00:00:05.000Z",
     ...overrides,
@@ -176,6 +183,67 @@ describe("listDocumentJobsForOrganization", () => {
     await expect(documentsRepository.listDocumentJobsForOrganization("org_1", { limit: 20 })).rejects.toThrow(
       AppError,
     );
+  });
+
+  it("excludes soft-deleted jobs", async () => {
+    const chain = createQueryBuilderMock({ data: [], error: null });
+    vi.mocked(supabaseAdmin.from).mockReturnValue(chain);
+
+    await documentsRepository.listDocumentJobsForOrganization("org_1", { limit: 20 });
+
+    expect(chain.is).toHaveBeenCalledWith("deleted_at", null);
+  });
+});
+
+describe("getDocumentJobForOrganization", () => {
+  it("scopes to id + organization and excludes soft-deleted jobs", async () => {
+    const chain = createQueryBuilderMock({ data: jobRow(), error: null });
+    vi.mocked(supabaseAdmin.from).mockReturnValue(chain);
+
+    const result = await documentsRepository.getDocumentJobForOrganization("job_1", "org_1");
+
+    expect(supabaseAdmin.from).toHaveBeenCalledWith("document_jobs");
+    expect(chain.eq).toHaveBeenCalledWith("id", "job_1");
+    expect(chain.eq).toHaveBeenCalledWith("organization_id", "org_1");
+    expect(chain.is).toHaveBeenCalledWith("deleted_at", null);
+    expect(result).toEqual(jobRow());
+  });
+
+  it("throws NotFoundError when the job doesn't exist, isn't in this org, or is soft-deleted", async () => {
+    const chain = createQueryBuilderMock({ data: null, error: null });
+    vi.mocked(supabaseAdmin.from).mockReturnValue(chain);
+
+    await expect(documentsRepository.getDocumentJobForOrganization("job_1", "org_1")).rejects.toThrow(NotFoundError);
+  });
+
+  it("throws AppError when Supabase returns an error", async () => {
+    const chain = createQueryBuilderMock({ data: null, error: { message: "db exploded" } });
+    vi.mocked(supabaseAdmin.from).mockReturnValue(chain);
+
+    await expect(documentsRepository.getDocumentJobForOrganization("job_1", "org_1")).rejects.toThrow(AppError);
+  });
+});
+
+describe("getDocumentJobForOrganizationIncludingDeleted", () => {
+  it("scopes to id + organization but does NOT filter out soft-deleted jobs", async () => {
+    const chain = createQueryBuilderMock({ data: jobRow({ deleted_at: "2026-01-20T00:00:00.000Z" }), error: null });
+    vi.mocked(supabaseAdmin.from).mockReturnValue(chain);
+
+    const result = await documentsRepository.getDocumentJobForOrganizationIncludingDeleted("job_1", "org_1");
+
+    expect(chain.eq).toHaveBeenCalledWith("id", "job_1");
+    expect(chain.eq).toHaveBeenCalledWith("organization_id", "org_1");
+    expect(chain.is).not.toHaveBeenCalled();
+    expect(result.deleted_at).toBe("2026-01-20T00:00:00.000Z");
+  });
+
+  it("throws NotFoundError when the job doesn't exist or isn't in this org", async () => {
+    const chain = createQueryBuilderMock({ data: null, error: null });
+    vi.mocked(supabaseAdmin.from).mockReturnValue(chain);
+
+    await expect(
+      documentsRepository.getDocumentJobForOrganizationIncludingDeleted("job_1", "org_1"),
+    ).rejects.toThrow(NotFoundError);
   });
 });
 

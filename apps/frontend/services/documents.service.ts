@@ -2,11 +2,13 @@ import "server-only";
 import { backendFetch } from "@/lib/api/backend-client";
 import { getAccessToken } from "@/lib/supabase/server-client";
 import {
+  deleteDocumentResponseSchema,
   documentsListResponseSchema,
   fieldCorrectionsResponseSchema,
   jobDtoSchema,
   previewUrlResponseSchema,
   uploadResponseSchema,
+  type DeleteDocumentResponse,
   type DocumentCorrectionsRequest,
   type DocumentsListResponse,
   type FieldCorrectionsResponse,
@@ -109,6 +111,24 @@ export async function rejectDocumentReview(jobId: string, request: DocumentCorre
   return backendFetch(`/api/v1/documents/jobs/${encodeURIComponent(jobId)}/reject`, jobDtoSchema, {
     method: "POST",
     body: JSON.stringify(request),
+    accessToken: accessToken ?? undefined,
+  });
+}
+
+/** Removes the original file only — the job stays fully visible, so this returns the updated job, not a confirmation-only shape. */
+export async function removeDocumentFile(jobId: string): Promise<JobDto> {
+  const accessToken = await getAccessToken();
+  return backendFetch(`/api/v1/documents/jobs/${encodeURIComponent(jobId)}/file`, jobDtoSchema, {
+    method: "DELETE",
+    accessToken: accessToken ?? undefined,
+  });
+}
+
+/** Soft-deletes the whole document. See `deleteDocumentResponseSchema`'s doc comment for why the response is just `{jobId}`, not a full `JobDto`. */
+export async function deleteDocument(jobId: string): Promise<DeleteDocumentResponse> {
+  const accessToken = await getAccessToken();
+  return backendFetch(`/api/v1/documents/jobs/${encodeURIComponent(jobId)}`, deleteDocumentResponseSchema, {
+    method: "DELETE",
     accessToken: accessToken ?? undefined,
   });
 }

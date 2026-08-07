@@ -135,4 +135,20 @@ export const documentsRoutes = new Elysia({ prefix: "/api/v1/documents" })
       return toJobDto(job);
     },
     { params: jobIdParamSchema, body: documentCorrectionsSchema },
+  )
+  .delete(
+    "/jobs/:id/file",
+    async ({ auth, params }) => {
+      const job = await documentsService.removeDocumentFile(auth.organizationId, params.id, auth.userId, auth.role);
+      return toJobDto(job);
+    },
+    { params: jobIdParamSchema },
+  )
+  .delete(
+    "/jobs/:id",
+    async ({ auth, params }) => {
+      const job = await documentsService.deleteDocument(auth.organizationId, params.id, auth.userId, auth.role);
+      return { jobId: job.id };
+    },
+    { params: jobIdParamSchema },
   );

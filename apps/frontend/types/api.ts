@@ -318,6 +318,18 @@ export interface DocumentCorrectionsRequest {
   corrections: Record<string, string>;
 }
 
+/**
+ * `DELETE /documents/jobs/:id` response shape. Deliberately not the full
+ * `JobDto` — once deleted, the job is no longer viewable through any other
+ * endpoint (`documents.repository.ts` filters `deleted_at` out of every
+ * normal lookup), so there's nothing meaningful left to return beyond
+ * confirming which job was deleted. `DELETE /jobs/:id/file` (remove the
+ * original file only, job stays fully visible) returns the updated
+ * `JobDto` instead — see `documents.service.ts#removeDocumentFile`.
+ */
+export const deleteDocumentResponseSchema = z.object({ jobId: z.string() });
+export type DeleteDocumentResponse = z.infer<typeof deleteDocumentResponseSchema>;
+
 // ---------------------------------------------------------------------------
 // Organization stats (modules/organization/organization.service.ts#getJobStats)
 // ---------------------------------------------------------------------------

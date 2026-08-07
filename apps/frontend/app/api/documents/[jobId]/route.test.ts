@@ -6,10 +6,11 @@ import type { JobDto } from "@/types/api";
 
 vi.mock("@/services/documents.service", () => ({
   getJobStatus: vi.fn(),
+  deleteDocument: vi.fn(),
 }));
 
 const documentsService = await import("@/services/documents.service");
-const { GET } = await import("@/app/api/documents/[jobId]/route");
+const { GET, DELETE } = await import("@/app/api/documents/[jobId]/route");
 
 function jobDtoFixture(overrides: Partial<JobDto> = {}): JobDto {
   return {
@@ -60,5 +61,30 @@ describe("GET /api/documents/:jobId", () => {
     expect(response.status).toBe(404);
     const body = await response.json();
     expect(body.error.code).toBe("NOT_FOUND");
+  });
+});
+
+describe("DELETE /api/documents/:jobId", () => {
+  it("deletes the document and returns the confirmation", async () => {
+    vi.mocked(documentsService.deleteDocument).mockResolvedValue({ jobId: "job_42" });
+
+    const response = await DELETE(new Request("http://localhost/api/documents/job_42", { method: "DELETE" }), {
+      params: Promise.resolve({ jobId: "job_42" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ jobId: "job_42" });
+    expect(documentsService.deleteDocument).toHaveBeenCalledWith("job_42");
+  });
+
+  it("translates a thrown service error into the uniform error envelope", async () => {
+    const { ApiError } = await import("@/lib/api/response");
+    vi.mocked(documentsService.deleteDocument).mockRejectedValue(new ApiError(403, "FORBIDDEN", "Not allowed."));
+
+    const response = await DELETE(new Request("http://localhost/api/documents/job_42", { method: "DELETE" }), {
+      params: Promise.resolve({ jobId: "job_42" }),
+    });
+
+    expect(response.status).toBe(403);
   });
 });

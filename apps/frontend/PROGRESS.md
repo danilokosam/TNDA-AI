@@ -351,3 +351,39 @@ Resetting the local edit draft whenever `jobId` changes was first written as a `
 ### Verification
 
 Full workspace `typecheck`/`lint`/`test` green — 146 backend + 250 frontend tests (up from 94/197). **Confirmed in a real browser**: editing a field and saving without confirming persists correctly across a reload while review status stays "Unreviewed"; confirming a document and then editing a field again correctly reverts its status to "Unreviewed" automatically; reject behaves the same way; `generic` documents correctly get confirm/reject with no field-editing UI; no console errors or React warnings throughout.
+
+## 13. Document review workflow redesign — Phase 2: file lifecycle (2026-08-07)
+
+The second of the three approved phases (§12) — remove the original file, or delete the whole document — absorbing the file-lifecycle design agreed before Phase 1 even started. Same TDD-first workflow and wait-for-manual-verification discipline as every phase before it.
+
+### Backend surface this app now consumes
+
+Two new endpoints: `DELETE /jobs/:id/file` (returns the updated `JobDto` — the job stays fully visible, so this matches confirm/reject's existing shape) and `DELETE /jobs/:id` (returns just `{jobId}` — deliberately not a full `JobDto`, since once deleted the job isn't retrievable through any other endpoint, so there's nothing else meaningful left to return). Both restricted server-side to the job's uploader or an org owner/admin — a stricter gate than Phase 1's any-org-member review actions, reflected in a new `deleteDocumentResponseSchema`/`DeleteDocumentResponse` type in `types/api.ts` for the second endpoint's leaner response.
+
+### `services/documents.service.ts` and BFF routes
+
+`removeDocumentFile(jobId)` and `deleteDocument(jobId)` added alongside the existing review-workflow functions. The `DELETE /jobs/:id/file` BFF route is a genuinely new file (`app/api/documents/[jobId]/file/route.ts`); the `DELETE /jobs/:id` BFF route is a new `DELETE` export added to the **existing** `app/api/documents/[jobId]/route.ts` (which, until now, only ever exported `GET`) — not a new file, since it's the same resource the `GET` handler already addresses.
+
+### `features/documents/hooks.ts`: `useRemoveDocumentFile`/`useDeleteDocument`
+
+Placed here, not in `features/results/hooks.ts` where Phase 1's review-workflow hooks live — deliberately, since Phase 3's Documents-list actions will need these same two hooks from a different page, not just the Results page. `useRemoveDocumentFile` invalidates `["document-preview-url", jobId]` on success — the one piece of cached data that actually changes, since `JobDto` never exposed `storage_path` to begin with. `useDeleteDocument` invalidates `["job-status", jobId]` and `["documents-list"]`.
+
+### `components/ui/alert-dialog.tsx`: added via the shadcn CLI, not hand-written
+
+`npx shadcn@latest add alert-dialog` — confirmed it produced a component matching this project's existing radix-nova conventions exactly (the same pattern already established by `dropdown-menu.tsx`), and that it touched only the one new file (it also tried to regenerate `button.tsx`, but skipped it since the content was already identical — verified via `git status`, not assumed). This is the first `Dialog`/`AlertDialog`-family primitive anywhere in this app; previously only `sheet.tsx` existed (the sidebar's mobile drawer), and there was no confirm-before-destructive-action pattern anywhere at all.
+
+### `DocumentResultsView`: two new destructive actions
+
+"Remove file" (`outline` button variant — milder, matching "Save corrections"'s existing treatment) and "Delete document" (`destructive` variant — matching "Reject"'s existing red treatment, since both are comparably serious), each behind its own `AlertDialog` confirmation, visually separated from Save/Confirm/Reject by a thin vertical divider rather than a new row (the plan called for "visually separated," and this was judged sufficient without a bigger layout change). Confirming "Delete document" calls `router.push("/documents")` afterward (`next/navigation`'s `useRouter`), since the job disappears from view the moment it's deleted — "Remove file" needs no navigation, the job stays exactly where it is. Both new mutations feed into the same inline error `Alert` and the same combined `isMutating` disable flag Phase 1 already built, extended rather than duplicated.
+
+### A testing-pattern gap this phase had to fill
+
+No prior test in this codebase exercised a Radix Dialog/AlertDialog-family component, so there was no established pattern to copy. Worked out two things the hard way, now documented here so they don't need rediscovering:
+- Radix portals dialog content into `document.body` only once opened — it's genuinely absent from the DOM beforehand, not rendered-and-hidden — so `await user.click(trigger)` followed by `await screen.findByRole("alertdialog")` is the correct wait-for-open sequence, not a bare `getByRole` immediately after the click.
+- A dialog's trigger button and its in-dialog confirm action can legitimately share the same accessible name (a deliberate, standard UX choice — both saying "Remove file," for instance, rather than an awkward mismatched pair). Once the dialog is open, both coexist in the DOM, so `screen.getByRole("button", {name: ...})` becomes ambiguous — tests need `within(dialog).getByRole(...)` scoping to pick out the one inside the dialog specifically.
+
+Also needed this test suite's first `next/navigation` mock, since no earlier tested component called `useRouter` directly: `vi.mock("next/navigation", () => ({ useRouter: () => ({ push: mockPush }) }))`, with `mockPush` cleared in a module-level `beforeEach` (not scoped to one `describe` block, since more than one block in the same test file now needs it).
+
+### Verification
+
+Full workspace `typecheck`/`lint`/`test` green — 168 backend + 265 frontend tests (up from 146/250). **Confirmed in a real browser**: Remove file works correctly; Delete document works correctly; Storage behaves correctly; soft-delete behaves correctly; no regressions found; no console errors.
