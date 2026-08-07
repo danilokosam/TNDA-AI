@@ -1,5 +1,6 @@
-import Link from "next/link";
 import { CircleCheck, CircleX, Clock, LoaderCircle, TriangleAlert, type LucideIcon } from "lucide-react";
+import { DocumentRowActions } from "@/components/documents/DocumentRowActions";
+import { REVIEW_STATUS_DISPLAY } from "@/components/results/DocumentResultsView";
 import { DOCUMENT_TYPE_LABELS } from "@/components/upload/DocumentTypeSelect";
 import { formatDate, formatPercent } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -33,6 +34,7 @@ export function DocumentsTable({ jobs }: DocumentsTableProps) {
           <th className="py-2 pr-4 font-medium">File</th>
           <th className="py-2 pr-4 font-medium">Type</th>
           <th className="py-2 pr-4 font-medium">Status</th>
+          <th className="py-2 pr-4 font-medium">Review</th>
           <th className="py-2 pr-4 font-medium">Confidence</th>
           <th className="py-2 pr-4 font-medium">Pages</th>
           <th className="py-2 pr-4 font-medium">Uploaded</th>
@@ -45,6 +47,8 @@ export function DocumentsTable({ jobs }: DocumentsTableProps) {
         {jobs.map((job) => {
           const display = STATUS_DISPLAY[job.status];
           const StatusIcon = display.icon;
+          const reviewDisplay = REVIEW_STATUS_DISPLAY[job.reviewStatus];
+          const ReviewIcon = reviewDisplay.icon;
 
           return (
             <tr key={job.jobId} className="border-b last:border-0">
@@ -61,15 +65,24 @@ export function DocumentsTable({ jobs }: DocumentsTableProps) {
                   <span>{display.label}</span>
                 </div>
               </td>
+              <td className="py-2 pr-4">
+                <div
+                  className={cn(
+                    "flex items-center gap-1.5",
+                    reviewDisplay.destructive ? "text-destructive" : "text-muted-foreground",
+                  )}
+                >
+                  <ReviewIcon className="size-3.5" />
+                  <span>{reviewDisplay.label}</span>
+                </div>
+              </td>
               <td className="py-2 pr-4 text-muted-foreground">
                 {job.averageConfidence !== null ? formatPercent(job.averageConfidence) : "—"}
               </td>
               <td className="py-2 pr-4 text-muted-foreground">{job.pageCount ?? "—"}</td>
               <td className="py-2 pr-4 text-muted-foreground">{formatDate(job.createdAt)}</td>
               <td className="py-2">
-                <Link href={`/documents/${job.jobId}`} className="text-primary underline-offset-4 hover:underline">
-                  View
-                </Link>
+                <DocumentRowActions job={job} />
               </td>
             </tr>
           );

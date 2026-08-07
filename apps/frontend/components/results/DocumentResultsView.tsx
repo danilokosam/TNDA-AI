@@ -33,7 +33,11 @@ interface DocumentResultsViewProps {
   jobId: string;
 }
 
-const REVIEW_STATUS_DISPLAY: Record<DocumentReviewStatus, { label: string; icon: LucideIcon; destructive?: boolean }> = {
+/** Exported for `DocumentsTable` (Stage 5's History table) to reuse for its own review-status column — same cross-file display-map convention as `DocumentTypeSelect.tsx#DOCUMENT_TYPE_LABELS`. */
+export const REVIEW_STATUS_DISPLAY: Record<
+  DocumentReviewStatus,
+  { label: string; icon: LucideIcon; destructive?: boolean }
+> = {
   unreviewed: { label: "Unreviewed", icon: Clock },
   confirmed: { label: "Confirmed", icon: CircleCheck },
   rejected: { label: "Rejected", icon: CircleX },

@@ -387,3 +387,29 @@ Also needed this test suite's first `next/navigation` mock, since no earlier tes
 ### Verification
 
 Full workspace `typecheck`/`lint`/`test` green — 168 backend + 265 frontend tests (up from 146/250). **Confirmed in a real browser**: Remove file works correctly; Delete document works correctly; Storage behaves correctly; soft-delete behaves correctly; no regressions found; no console errors.
+
+## 14. Document review workflow redesign — Phase 3: Documents-list actions (2026-08-07)
+
+The third and final phase of the approved plan (§12). The Documents list (`DocumentsTable.tsx`, Stage 5, §8) still only had a single "View" link per row — no way to remove a file or delete a document without first navigating to that document's own Results page — and no visibility into review status from the list at all. Phase 3 closes both gaps. **No backend changes, no new migration** — unlike every phase before this one, this is pure frontend composition of what Phases 1 and 2 already built.
+
+### New component: `components/documents/DocumentRowActions.tsx`
+
+A `DropdownMenu` per row (View / Remove file / Delete document), replacing the table's previous bare `<Link>View</Link>`. Calls `useRemoveDocumentFile()`/`useDeleteDocument()` (from `features/documents/hooks.ts`, built in §13) — **one hook instance per rendered row**, matching the exact "hook per item in a dynamic list" pattern already established for `PolledUploadQueueItem` back in §5 — deliberately not one shared mutation instance at the table or workspace level, since that would mean all rows' pending/error state collapsing onto one shared object (row A's in-flight delete would incorrectly show row B's button as disabled too).
+
+### A real Radix composition detail worth recording as a pattern
+
+The confirmation dialogs here use `AlertDialog`'s *controlled* form (`open={confirmingAction === "remove-file"}` / `onOpenChange`), not the simpler `AlertDialogTrigger`-wraps-a-button pattern `DocumentResultsView.tsx` used for its own Remove file/Delete document actions in §13. This is a deliberate, necessary difference, not an inconsistency: here the trigger is a `DropdownMenuItem`, and nesting an `AlertDialogTrigger` directly inside a `DropdownMenuItem` is a known-fragile Radix composition (the dropdown menu's own closing/focus-return behavior on item-select can race the `AlertDialog` trying to open right after, sometimes stealing focus or closing the dialog prematurely). The fix: each destructive `DropdownMenuItem`'s `onSelect` handler calls `event.preventDefault()` (stops the menu's default close-and-refocus from interfering) and sets local state (`confirmingAction: "remove-file" | "delete" | null`); a separate, controlled `AlertDialog`, rendered as a sibling of the `DropdownMenu` rather than nested inside it, opens based on that state. Confirmed working via real interaction tests (`user.click` through the actual open → select → confirm sequence), not just rendered-output assertions.
+
+### Review-status badge column
+
+Added to `DocumentsTable.tsx`, between the existing `Status` (Azure processing) and `Confidence` columns. Reuses `REVIEW_STATUS_DISPLAY` — *exported* from `components/results/DocumentResultsView.tsx` for this purpose (it previously lived there as a private, unexported const from §12) rather than duplicated — the same cross-file small-display-map convention `DocumentsTable.tsx` already used for `DOCUMENT_TYPE_LABELS` (imported from `components/upload/DocumentTypeSelect.tsx`). Kept visually distinct from the existing `Status` column (a separate column, independently rendered) so a `rejected_quota` processing status ("Quota exceeded") and a `rejected` review status ("Rejected") never read as ambiguous or collide.
+
+### Deliberately not built
+
+The optional `reviewStatus` filter in `features/documents/filters.ts` — the plan itself marked this "optional, lowest priority... not required for Phase 3 to be considered done." Skipped consciously, not forgotten. Would follow the exact same reducer-entry pattern already used for `status`/`documentType` if picked up later.
+
+### Verification
+
+Full workspace `typecheck`/`lint`/`test` green — 168 backend tests (unchanged — nothing backend-side changed this phase) / 15 files, 273 frontend tests (up from 265) / 38 files. The user manually verified in a real browser: the row actions menu, review-status badge, and delete/remove-file behavior from the list were all confirmed working, matching the same behavior already verified from the Results page in §13.
+
+**This completes the entire three-phase document review workflow redesign** — the plan that started from the user's "stop implementing new features and redesign this properly" request (§9). Phase 1 (§12) = field corrections (full audit-log history) + confirm/reject. Phase 2 (§13) = file lifecycle (remove file / delete document). Phase 3 (this section) = Documents-list actions. All three built, tested, and confirmed in a real browser.
