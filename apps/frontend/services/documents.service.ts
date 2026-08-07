@@ -1,7 +1,16 @@
 import "server-only";
 import { backendFetch } from "@/lib/api/backend-client";
 import { getAccessToken } from "@/lib/supabase/server-client";
-import { documentsListResponseSchema, type DocumentsListResponse, type ListDocumentsParams } from "@/types/api";
+import {
+  documentsListResponseSchema,
+  jobDtoSchema,
+  uploadResponseSchema,
+  type DocumentsListResponse,
+  type JobDto,
+  type ListDocumentsParams,
+  type UploadDocumentParams,
+  type UploadResponse,
+} from "@/types/api";
 
 function buildQuery(params: ListDocumentsParams): string {
   const search = new URLSearchParams();
@@ -26,6 +35,31 @@ function buildQuery(params: ListDocumentsParams): string {
 export async function listDocuments(params: ListDocumentsParams = {}): Promise<DocumentsListResponse> {
   const accessToken = await getAccessToken();
   return backendFetch(`/api/v1/documents${buildQuery(params)}`, documentsListResponseSchema, {
+    accessToken: accessToken ?? undefined,
+  });
+}
+
+/**
+ * `documentType` is omitted from the form data entirely when not provided —
+ * the backend defaults to `"invoice"` itself (`uploadDocumentSchema`), so
+ * this doesn't duplicate that default on the frontend side.
+ */
+export async function uploadDocument(params: UploadDocumentParams): Promise<UploadResponse> {
+  const accessToken = await getAccessToken();
+  const formData = new FormData();
+  formData.set("file", params.file);
+  if (params.documentType) formData.set("documentType", params.documentType);
+
+  return backendFetch("/api/v1/documents", uploadResponseSchema, {
+    method: "POST",
+    body: formData,
+    accessToken: accessToken ?? undefined,
+  });
+}
+
+export async function getJobStatus(jobId: string): Promise<JobDto> {
+  const accessToken = await getAccessToken();
+  return backendFetch(`/api/v1/documents/jobs/${encodeURIComponent(jobId)}`, jobDtoSchema, {
     accessToken: accessToken ?? undefined,
   });
 }

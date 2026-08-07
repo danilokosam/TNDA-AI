@@ -1,3 +1,17 @@
+const FILE_SIZE_UNITS = ["B", "KB", "MB", "GB"] as const;
+
+/** `500` -> "500 B"; `1536` -> "1.5 KB"; `1048576` -> "1.0 MB". */
+export function formatFileSize(bytes: number): string {
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < FILE_SIZE_UNITS.length - 1) {
+    value /= 1024;
+    unitIndex++;
+  }
+  const formatted = unitIndex === 0 ? value.toString() : value.toFixed(1);
+  return `${formatted} ${FILE_SIZE_UNITS[unitIndex]}`;
+}
+
 /** `82` -> "82%". Caller is responsible for the `null` ("no data") case. */
 export function formatPercent(rate: number): string {
   return `${Math.round(rate * 100)}%`;

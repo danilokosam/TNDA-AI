@@ -307,3 +307,17 @@ export const uploadResponseSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("batch"), batch: batchResultSchema }),
 ]);
 export type UploadResponse = z.infer<typeof uploadResponseSchema>;
+
+/**
+ * `POST /documents` request shape (`documents.schema.ts#uploadDocumentSchema`).
+ * A plain interface, not a Zod schema, same reasoning as `ListDocumentsParams`:
+ * this is an outgoing request the frontend itself constructs from a real
+ * `File` object (not JSON), and the backend re-validates it independently
+ * on receipt regardless. `documentType` defaults to `"invoice"` server-side
+ * when omitted, matched here by not sending it rather than duplicating the
+ * default on this side.
+ */
+export interface UploadDocumentParams {
+  file: File;
+  documentType?: DocumentType;
+}

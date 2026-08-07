@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import { listDocuments } from "@/services/documents.service";
+import { listDocuments, uploadDocument } from "@/services/documents.service";
 import { toErrorResponse } from "@/lib/api/route-handler";
-import type { ListDocumentsParams } from "@/types/api";
+import type { DocumentType, ListDocumentsParams } from "@/types/api";
 
 export async function GET(request: Request) {
   try {
@@ -20,6 +20,28 @@ export async function GET(request: Request) {
 
     const result = await listDocuments(query);
     return NextResponse.json(result);
+  } catch (error) {
+    return toErrorResponse(error);
+  }
+}
+
+export async function POST(request: Request) {
+  try {
+    const formData = await request.formData();
+    const file = formData.get("file");
+
+    if (!(file instanceof File)) {
+      return NextResponse.json(
+        { error: { code: "VALIDATION_ERROR", message: "A file is required." } },
+        { status: 400 },
+      );
+    }
+
+    const documentTypeValue = formData.get("documentType");
+    const documentType = typeof documentTypeValue === "string" ? (documentTypeValue as DocumentType) : undefined;
+
+    const result = await uploadDocument({ file, documentType });
+    return NextResponse.json(result, { status: 202 });
   } catch (error) {
     return toErrorResponse(error);
   }
