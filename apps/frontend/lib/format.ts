@@ -45,3 +45,16 @@ const shortDateFormatter = new Intl.DateTimeFormat("en-US", { month: "short", da
 export function formatShortDate(isoDate: string): string {
   return shortDateFormatter.format(new Date(`${isoDate}T00:00:00Z`));
 }
+
+const dateFormatter = new Intl.DateTimeFormat("en-US", { year: "numeric", month: "short", day: "numeric" });
+
+/**
+ * `"2026-08-08T14:30:00.000Z"` -> "Aug 8, 2026". Unlike `formatShortDate`,
+ * this takes a real timestamp (`document_jobs.created_at`, a moment that
+ * actually happened) and deliberately renders in the viewer's local
+ * timezone, not UTC — "uploaded at 2pm" should mean 2pm for the person
+ * reading it, not 2pm UTC.
+ */
+export function formatDate(isoDateTime: string): string {
+  return dateFormatter.format(new Date(isoDateTime));
+}

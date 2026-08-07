@@ -1,7 +1,7 @@
 import { DOCUMENT_TYPES, type DocumentType } from "@/types/api";
 import { cn } from "@/lib/utils";
 
-const DOCUMENT_TYPE_LABELS: Record<DocumentType, string> = {
+export const DOCUMENT_TYPE_LABELS: Record<DocumentType, string> = {
   invoice: "Invoice",
   receipt: "Receipt",
   identity_document: "Identity document",

@@ -82,6 +82,9 @@ describe("UploadWorkspace — polling regression", () => {
       averageConfidence: null,
       resultJson: null,
       errorMessage: null,
+      reviewStatus: "unreviewed",
+      reviewedBy: null,
+      reviewedAt: null,
       createdAt: "2026-08-08T00:00:00.000Z",
       updatedAt: "2026-08-08T00:00:00.000Z",
     };

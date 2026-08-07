@@ -13,6 +13,9 @@ const envSchema = z.object({
   SUPABASE_ANON_KEY: z.string().min(1),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
   SUPABASE_JWT_SECRET: z.string().min(1),
+  // The bucket itself is created by migration 0011, not here — this is
+  // just which bucket name storage.service.ts reads from/writes to.
+  SUPABASE_STORAGE_BUCKET: z.string().min(1).default("documents"),
 
   AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT: z.string().url(),
   AZURE_DOCUMENT_INTELLIGENCE_API_KEY: z.string().min(1),

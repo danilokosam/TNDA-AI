@@ -6,7 +6,7 @@
 // parser used here. Confirmed with a plain-Node repro outside Vitest:
 // jsdom's File is the mismatch, not a real bug in the route.
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { JobDto } from "@/types/api";
+import type { DocumentsListResponse, JobDto } from "@/types/api";
 
 vi.mock("@/services/documents.service", () => ({
   uploadDocument: vi.fn(),
@@ -14,7 +14,7 @@ vi.mock("@/services/documents.service", () => ({
 }));
 
 const documentsService = await import("@/services/documents.service");
-const { POST } = await import("@/app/api/documents/route");
+const { GET, POST } = await import("@/app/api/documents/route");
 
 function jobDtoFixture(overrides: Partial<JobDto> = {}): JobDto {
   return {
@@ -27,6 +27,9 @@ function jobDtoFixture(overrides: Partial<JobDto> = {}): JobDto {
     averageConfidence: null,
     resultJson: null,
     errorMessage: null,
+    reviewStatus: "unreviewed",
+    reviewedBy: null,
+    reviewedAt: null,
     createdAt: "2026-08-08T00:00:00.000Z",
     updatedAt: "2026-08-08T00:00:00.000Z",
     ...overrides,
@@ -37,9 +40,60 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-// GET on this route (Stage 2) isn't covered here — it predates this test
-// suite and was verified via real curl requests against the live backend
-// instead (see PROGRESS.md §3.7/§6). Only POST (Stage 3, new) is tested.
+describe("GET /api/documents", () => {
+  const emptyResult: DocumentsListResponse = { data: [], pagination: { nextCursor: null, hasMore: false } };
+
+  it("calls listDocuments with no params and returns its result", async () => {
+    vi.mocked(documentsService.listDocuments).mockResolvedValue(emptyResult);
+
+    const request = new Request("http://localhost/api/documents");
+    const response = await GET(request);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(emptyResult);
+    expect(documentsService.listDocuments).toHaveBeenCalledWith({
+      status: undefined,
+      documentType: undefined,
+      search: undefined,
+      dateFrom: undefined,
+      dateTo: undefined,
+      cursor: undefined,
+      limit: undefined,
+    });
+  });
+
+  it("parses every query param present on the URL, converting limit to a number", async () => {
+    vi.mocked(documentsService.listDocuments).mockResolvedValue(emptyResult);
+
+    const request = new Request(
+      "http://localhost/api/documents?status=completed&documentType=invoice&search=acme&dateFrom=2026-01-01&dateTo=2026-01-31&cursor=abc123&limit=10",
+    );
+    await GET(request);
+
+    expect(documentsService.listDocuments).toHaveBeenCalledWith({
+      status: "completed",
+      documentType: "invoice",
+      search: "acme",
+      dateFrom: "2026-01-01",
+      dateTo: "2026-01-31",
+      cursor: "abc123",
+      limit: 10,
+    });
+  });
+
+  it("translates a thrown service error into the uniform error envelope", async () => {
+    const { ApiError } = await import("@/lib/api/response");
+    vi.mocked(documentsService.listDocuments).mockRejectedValue(new ApiError(400, "VALIDATION_ERROR", "Bad query."));
+
+    const request = new Request("http://localhost/api/documents?limit=999");
+    const response = await GET(request);
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error.code).toBe("VALIDATION_ERROR");
+  });
+});
+
 describe("POST /api/documents", () => {
   it("uploads the file from form data and returns the service's response with 202", async () => {
     const uploadResult = { kind: "single" as const, job: jobDtoFixture() };

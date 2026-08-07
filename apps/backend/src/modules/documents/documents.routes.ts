@@ -1,8 +1,9 @@
 import { Elysia } from "elysia";
 import { authMiddleware } from "@/middlewares/auth.middleware";
 import * as documentsService from "@/modules/documents/documents.service";
-import type { DocumentJobRow } from "@/modules/documents/documents.repository";
+import type { DocumentJobRow, FieldCorrectionRow } from "@/modules/documents/documents.repository";
 import {
+  documentCorrectionsSchema,
   jobIdParamSchema,
   listDocumentsQuerySchema,
   uploadDocumentSchema,
@@ -19,8 +20,21 @@ function toJobDto(job: DocumentJobRow) {
     averageConfidence: job.average_confidence,
     resultJson: job.result_json,
     errorMessage: job.error_message,
+    reviewStatus: job.review_status,
+    reviewedBy: job.reviewed_by,
+    reviewedAt: job.reviewed_at,
     createdAt: job.created_at,
     updatedAt: job.updated_at,
+  };
+}
+
+function toFieldCorrectionDto(row: FieldCorrectionRow) {
+  return {
+    fieldName: row.field_name,
+    previousValue: row.previous_value,
+    newValue: row.new_value,
+    editedBy: row.edited_by,
+    editedAt: row.edited_at,
   };
 }
 
@@ -66,4 +80,59 @@ export const documentsRoutes = new Elysia({ prefix: "/api/v1/documents" })
       return toJobDto(job);
     },
     { params: jobIdParamSchema },
+  )
+  .get(
+    "/jobs/:id/preview-url",
+    async ({ auth, params }) => {
+      const url = await documentsService.getDocumentPreviewUrl(auth.organizationId, params.id);
+      return { url };
+    },
+    { params: jobIdParamSchema },
+  )
+  .get(
+    "/jobs/:id/corrections",
+    async ({ auth, params }) => {
+      const { effective, history } = await documentsService.getFieldCorrections(auth.organizationId, params.id);
+      return { effective, history: history.map(toFieldCorrectionDto) };
+    },
+    { params: jobIdParamSchema },
+  )
+  .patch(
+    "/jobs/:id/corrections",
+    async ({ auth, params, body }) => {
+      const job = await documentsService.saveFieldCorrections(
+        auth.organizationId,
+        params.id,
+        auth.userId,
+        body.corrections,
+      );
+      return toJobDto(job);
+    },
+    { params: jobIdParamSchema, body: documentCorrectionsSchema },
+  )
+  .post(
+    "/jobs/:id/confirm",
+    async ({ auth, params, body }) => {
+      const job = await documentsService.confirmDocumentReview(
+        auth.organizationId,
+        params.id,
+        auth.userId,
+        body.corrections,
+      );
+      return toJobDto(job);
+    },
+    { params: jobIdParamSchema, body: documentCorrectionsSchema },
+  )
+  .post(
+    "/jobs/:id/reject",
+    async ({ auth, params, body }) => {
+      const job = await documentsService.rejectDocumentReview(
+        auth.organizationId,
+        params.id,
+        auth.userId,
+        body.corrections,
+      );
+      return toJobDto(job);
+    },
+    { params: jobIdParamSchema, body: documentCorrectionsSchema },
   );

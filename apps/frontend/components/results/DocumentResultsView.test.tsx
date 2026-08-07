@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { createQueryWrapper } from "../../test/query-client-wrapper";
 import type { JobDto } from "@/types/api";
 
@@ -21,6 +22,9 @@ function jobFixture(overrides: Partial<JobDto> = {}): JobDto {
     averageConfidence: 0.92,
     resultJson: null,
     errorMessage: null,
+    reviewStatus: "unreviewed",
+    reviewedBy: null,
+    reviewedAt: null,
     createdAt: "2026-08-08T00:00:00.000Z",
     updatedAt: "2026-08-08T00:00:00.000Z",
     ...overrides,
@@ -82,11 +86,11 @@ describe("DocumentResultsView", () => {
     render(<DocumentResultsView jobId="job_1" />, { wrapper: createQueryWrapper() });
 
     expect(await screen.findByText("Total")).toBeInTheDocument();
-    expect(screen.getByText("$50.00")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("$50.00")).toBeInTheDocument();
     expect(screen.getByText("90%")).toBeInTheDocument();
   });
 
-  it("renders raw content for a completed generic document", async () => {
+  it("renders raw content for a completed generic document, not collapsed", async () => {
     vi.mocked(apiFetch).mockResolvedValue(
       jobFixture({
         status: "completed",
@@ -96,9 +100,61 @@ describe("DocumentResultsView", () => {
       }),
     );
 
-    render(<DocumentResultsView jobId="job_1" />, { wrapper: createQueryWrapper() });
+    const { container } = render(<DocumentResultsView jobId="job_1" />, { wrapper: createQueryWrapper() });
 
     expect(await screen.findByText("Extracted document text.")).toBeInTheDocument();
+    expect(container.querySelector("details")).toBeNull();
+  });
+
+  it("renders generic document content as real Markdown, not literal syntax characters", async () => {
+    vi.mocked(apiFetch).mockResolvedValue(
+      jobFixture({
+        status: "completed",
+        documentType: "generic",
+        averageConfidence: null,
+        resultJson: { content: "# Heading\n\n| A | B |\n| --- | --- |\n| 1 | 2 |", pages: [], tables: [] },
+      }),
+    );
+
+    const { container } = render(<DocumentResultsView jobId="job_1" />, { wrapper: createQueryWrapper() });
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Heading" })).toBeInTheDocument();
+    expect(container.querySelector("table")).not.toBeNull();
+  });
+
+  it("collapses raw content behind a details disclosure when extracted fields are also present", async () => {
+    vi.mocked(apiFetch).mockResolvedValue(
+      jobFixture({
+        status: "completed",
+        resultJson: {
+          documents: [{ fields: { Total: { content: "$50.00", confidence: 0.9 } } }],
+          content: "Full OCR text of the invoice.",
+        },
+      }),
+    );
+
+    const { container } = render(<DocumentResultsView jobId="job_1" />, { wrapper: createQueryWrapper() });
+
+    await screen.findByText("Total");
+    const details = container.querySelector("details");
+    expect(details).not.toBeNull();
+    expect(details).not.toHaveAttribute("open");
+    expect(screen.getByText(/show raw extracted text/i)).toBeInTheDocument();
+    expect(screen.getByText("Full OCR text of the invoice.")).toBeInTheDocument();
+  });
+
+  it("renders only the fields table, with no disclosure, when fields exist but there is no raw content", async () => {
+    vi.mocked(apiFetch).mockResolvedValue(
+      jobFixture({
+        status: "completed",
+        resultJson: { documents: [{ fields: { Total: { content: "$50.00", confidence: 0.9 } } }] },
+      }),
+    );
+
+    const { container } = render(<DocumentResultsView jobId="job_1" />, { wrapper: createQueryWrapper() });
+
+    await screen.findByText("Total");
+    expect(container.querySelector("details")).toBeNull();
   });
 
   it("shows a fallback message when a completed job has no extractable data", async () => {
@@ -116,5 +172,165 @@ describe("DocumentResultsView", () => {
     render(<DocumentResultsView jobId="job_1" />, { wrapper: createQueryWrapper() });
 
     expect(await screen.findByText(/couldn.t load this document/i)).toBeInTheDocument();
+  });
+});
+
+describe("DocumentResultsView — review workflow", () => {
+  function fieldShapedJob(overrides: Partial<JobDto> = {}): JobDto {
+    return jobFixture({
+      status: "completed",
+      resultJson: { documents: [{ fields: { Total: { content: "$50.00", confidence: 0.9 } } }] },
+      ...overrides,
+    });
+  }
+
+  /** Dispatches by path suffix + HTTP method, since GET and PATCH .../corrections share a path. */
+  function mockApiFetch(handlers: Array<[pathSuffix: string, method: string | undefined, response: unknown]>) {
+    vi.mocked(apiFetch).mockImplementation(async (path: unknown, _schema: unknown, init?: RequestInit) => {
+      const p = path as string;
+      const method = init?.method;
+      const handler = handlers.find(([suffix, m]) => p.endsWith(suffix) && m === method);
+      if (!handler) throw new Error(`Unmocked apiFetch call: ${method ?? "GET"} ${p}`);
+      return handler[2];
+    });
+  }
+
+  it("shows a badge reflecting the job's current review status", async () => {
+    mockApiFetch([
+      ["/documents/job_1", undefined, fieldShapedJob({ reviewStatus: "confirmed" })],
+      ["/corrections", undefined, { effective: {}, history: [] }],
+      ["/preview-url", undefined, { url: null }],
+    ]);
+
+    render(<DocumentResultsView jobId="job_1" />, { wrapper: createQueryWrapper() });
+
+    expect(await screen.findByText("Confirmed")).toBeInTheDocument();
+  });
+
+  it("shows Save/Confirm/Reject for a field-shaped document, with Save disabled until something is edited", async () => {
+    mockApiFetch([
+      ["/documents/job_1", undefined, fieldShapedJob()],
+      ["/corrections", undefined, { effective: {}, history: [] }],
+      ["/preview-url", undefined, { url: null }],
+    ]);
+
+    render(<DocumentResultsView jobId="job_1" />, { wrapper: createQueryWrapper() });
+
+    await screen.findByText("Total");
+    expect(screen.getByRole("button", { name: /save corrections/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^confirm$/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /^reject$/i })).toBeEnabled();
+  });
+
+  it("does not show Save corrections for a generic document — there are no fields to correct", async () => {
+    mockApiFetch([
+      [
+        "/documents/job_1",
+        undefined,
+        jobFixture({ status: "completed", documentType: "generic", averageConfidence: null, resultJson: { content: "hello" } }),
+      ],
+      ["/preview-url", undefined, { url: null }],
+    ]);
+
+    render(<DocumentResultsView jobId="job_1" />, { wrapper: createQueryWrapper() });
+
+    await screen.findByText("hello");
+    expect(screen.queryByRole("button", { name: /save corrections/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^confirm$/i })).toBeEnabled();
+  });
+
+  it("enables Save once a field is edited, and PATCHes the current draft", async () => {
+    mockApiFetch([
+      ["/documents/job_1", undefined, fieldShapedJob()],
+      ["/corrections", undefined, { effective: {}, history: [] }],
+      ["/preview-url", undefined, { url: null }],
+      ["/corrections", "PATCH", fieldShapedJob()],
+    ]);
+    const user = userEvent.setup();
+
+    render(<DocumentResultsView jobId="job_1" />, { wrapper: createQueryWrapper() });
+
+    const input = await screen.findByDisplayValue("$50.00");
+    await user.clear(input);
+    await user.type(input, "$55.00");
+
+    const saveButton = screen.getByRole("button", { name: /save corrections/i });
+    expect(saveButton).toBeEnabled();
+    await user.click(saveButton);
+
+    await waitFor(() => {
+      const patchCall = vi
+        .mocked(apiFetch)
+        .mock.calls.find(([, , init]) => (init as RequestInit | undefined)?.method === "PATCH");
+      expect(patchCall).toBeDefined();
+      expect(patchCall?.[2]?.body).toBe(JSON.stringify({ corrections: { Total: "$55.00" } }));
+    });
+  });
+
+  it("Confirm sends the current draft (possibly empty) and marks the job confirmed", async () => {
+    mockApiFetch([
+      ["/documents/job_1", undefined, fieldShapedJob()],
+      ["/corrections", undefined, { effective: {}, history: [] }],
+      ["/preview-url", undefined, { url: null }],
+      ["/confirm", "POST", fieldShapedJob({ reviewStatus: "confirmed" })],
+    ]);
+    const user = userEvent.setup();
+
+    render(<DocumentResultsView jobId="job_1" />, { wrapper: createQueryWrapper() });
+
+    await screen.findByText("Total");
+    await user.click(screen.getByRole("button", { name: /^confirm$/i }));
+
+    await waitFor(() => {
+      const confirmCall = vi.mocked(apiFetch).mock.calls.find(([path]) => (path as string).endsWith("/confirm"));
+      expect(confirmCall).toBeDefined();
+      expect(confirmCall?.[2]?.body).toBe(JSON.stringify({ corrections: {} }));
+    });
+  });
+
+  it("Reject POSTs to the reject endpoint", async () => {
+    mockApiFetch([
+      ["/documents/job_1", undefined, fieldShapedJob()],
+      ["/corrections", undefined, { effective: {}, history: [] }],
+      ["/preview-url", undefined, { url: null }],
+      ["/reject", "POST", fieldShapedJob({ reviewStatus: "rejected" })],
+    ]);
+    const user = userEvent.setup();
+
+    render(<DocumentResultsView jobId="job_1" />, { wrapper: createQueryWrapper() });
+
+    await screen.findByText("Total");
+    await user.click(screen.getByRole("button", { name: /^reject$/i }));
+
+    await waitFor(() => {
+      expect(vi.mocked(apiFetch).mock.calls.some(([path]) => (path as string).endsWith("/reject"))).toBe(true);
+    });
+  });
+
+  it("shows an inline error message when a review action fails", async () => {
+    const { ApiError } = await import("@/lib/api/response");
+    mockApiFetch([
+      ["/documents/job_1", undefined, fieldShapedJob()],
+      ["/corrections", undefined, { effective: {}, history: [] }],
+      ["/preview-url", undefined, { url: null }],
+    ]);
+    vi.mocked(apiFetch).mockImplementation(async (path: unknown, _schema: unknown, init?: RequestInit) => {
+      const p = path as string;
+      if (p.endsWith("/confirm") && init?.method === "POST") {
+        throw new ApiError(409, "CONFLICT", "This document hasn't finished processing yet.");
+      }
+      if (p.endsWith("/documents/job_1")) return fieldShapedJob();
+      if (p.endsWith("/corrections")) return { effective: {}, history: [] };
+      if (p.endsWith("/preview-url")) return { url: null };
+      throw new Error(`Unmocked apiFetch call: ${p}`);
+    });
+    const user = userEvent.setup();
+
+    render(<DocumentResultsView jobId="job_1" />, { wrapper: createQueryWrapper() });
+
+    await screen.findByText("Total");
+    await user.click(screen.getByRole("button", { name: /^confirm$/i }));
+
+    expect(await screen.findByText("This document hasn't finished processing yet.")).toBeInTheDocument();
   });
 });

@@ -1,3 +1,5 @@
+import type { DocumentType } from "@/types/api";
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -57,6 +59,41 @@ export function extractDocumentFields(resultJson: Record<string, unknown> | null
   return fields;
 }
 
+export interface EffectiveField {
+  name: string;
+  originalValue: string;
+  effectiveValue: string;
+  isCorrected: boolean;
+  confidence: number | null;
+}
+
+/**
+ * Merges Azure's originally-extracted fields with the effective (latest)
+ * value per field from `GET .../corrections` — what the review UI actually
+ * edits and displays. `isCorrected` compares the effective value against
+ * the original, not "does a correction exist for this field name": a field
+ * corrected and then reverted back to Azure's original value should read
+ * as uncorrected again (the full edit history, if that matters, lives in
+ * the same response's `history` array, not here). `confidence` always
+ * stays Azure's original score, even when corrected — a human override has
+ * no confidence of its own to report.
+ */
+export function extractEffectiveFields(
+  resultJson: Record<string, unknown> | null,
+  effective: Record<string, string>,
+): EffectiveField[] {
+  return extractDocumentFields(resultJson).map((field) => {
+    const effectiveValue = effective[field.name] ?? field.displayValue;
+    return {
+      name: field.name,
+      originalValue: field.displayValue,
+      effectiveValue,
+      isCorrected: effectiveValue !== field.displayValue,
+      confidence: field.confidence,
+    };
+  });
+}
+
 /**
  * The top-level `content` field — Azure's full OCR'd text for the whole
  * document, present on every model's result regardless of type (including
@@ -67,4 +104,18 @@ export function extractDocumentFields(resultJson: Record<string, unknown> | null
 export function extractRawContent(resultJson: Record<string, unknown> | null): string | null {
   if (!resultJson) return null;
   return typeof resultJson.content === "string" && resultJson.content.length > 0 ? resultJson.content : null;
+}
+
+/**
+ * Mirrors the backend's `documents.strategy.ts` `STRATEGIES` table: `generic`
+ * (Azure's prebuilt-layout model) is the only type that requests
+ * `outputContentFormat: "markdown"` — the other three keep Azure's default
+ * flat reading-order text. Verified against real source as of 2026-08-07.
+ * Content format is a property of *document type*, not something derivable
+ * from `resultJson` itself, so this can't live next to `extractRawContent`'s
+ * other checks — hand-mirrored here the same way `DOCUMENT_TYPES` itself
+ * already is in `types/api.ts`.
+ */
+export function isMarkdownContent(documentType: DocumentType): boolean {
+  return documentType === "generic";
 }

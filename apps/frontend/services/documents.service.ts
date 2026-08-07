@@ -3,11 +3,16 @@ import { backendFetch } from "@/lib/api/backend-client";
 import { getAccessToken } from "@/lib/supabase/server-client";
 import {
   documentsListResponseSchema,
+  fieldCorrectionsResponseSchema,
   jobDtoSchema,
+  previewUrlResponseSchema,
   uploadResponseSchema,
+  type DocumentCorrectionsRequest,
   type DocumentsListResponse,
+  type FieldCorrectionsResponse,
   type JobDto,
   type ListDocumentsParams,
+  type PreviewUrlResponse,
   type UploadDocumentParams,
   type UploadResponse,
 } from "@/types/api";
@@ -60,6 +65,50 @@ export async function uploadDocument(params: UploadDocumentParams): Promise<Uplo
 export async function getJobStatus(jobId: string): Promise<JobDto> {
   const accessToken = await getAccessToken();
   return backendFetch(`/api/v1/documents/jobs/${encodeURIComponent(jobId)}`, jobDtoSchema, {
+    accessToken: accessToken ?? undefined,
+  });
+}
+
+export async function getPreviewUrl(jobId: string): Promise<PreviewUrlResponse> {
+  const accessToken = await getAccessToken();
+  return backendFetch(`/api/v1/documents/jobs/${encodeURIComponent(jobId)}/preview-url`, previewUrlResponseSchema, {
+    accessToken: accessToken ?? undefined,
+  });
+}
+
+export async function getFieldCorrections(jobId: string): Promise<FieldCorrectionsResponse> {
+  const accessToken = await getAccessToken();
+  return backendFetch(
+    `/api/v1/documents/jobs/${encodeURIComponent(jobId)}/corrections`,
+    fieldCorrectionsResponseSchema,
+    { accessToken: accessToken ?? undefined },
+  );
+}
+
+/** Saves corrections without deciding confirm/reject — see documents.service.ts (backend) for the reset-to-unreviewed behavior this can trigger. */
+export async function saveFieldCorrections(jobId: string, request: DocumentCorrectionsRequest): Promise<JobDto> {
+  const accessToken = await getAccessToken();
+  return backendFetch(`/api/v1/documents/jobs/${encodeURIComponent(jobId)}/corrections`, jobDtoSchema, {
+    method: "PATCH",
+    body: JSON.stringify(request),
+    accessToken: accessToken ?? undefined,
+  });
+}
+
+export async function confirmDocumentReview(jobId: string, request: DocumentCorrectionsRequest): Promise<JobDto> {
+  const accessToken = await getAccessToken();
+  return backendFetch(`/api/v1/documents/jobs/${encodeURIComponent(jobId)}/confirm`, jobDtoSchema, {
+    method: "POST",
+    body: JSON.stringify(request),
+    accessToken: accessToken ?? undefined,
+  });
+}
+
+export async function rejectDocumentReview(jobId: string, request: DocumentCorrectionsRequest): Promise<JobDto> {
+  const accessToken = await getAccessToken();
+  return backendFetch(`/api/v1/documents/jobs/${encodeURIComponent(jobId)}/reject`, jobDtoSchema, {
+    method: "POST",
+    body: JSON.stringify(request),
     accessToken: accessToken ?? undefined,
   });
 }

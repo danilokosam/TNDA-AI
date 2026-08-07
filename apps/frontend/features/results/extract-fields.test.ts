@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractDocumentFields, extractRawContent } from "@/features/results/extract-fields";
+import { extractDocumentFields, extractEffectiveFields, extractRawContent } from "@/features/results/extract-fields";
 
 describe("extractDocumentFields", () => {
   it("returns an empty array for a null result", () => {
@@ -73,6 +73,64 @@ describe("extractDocumentFields", () => {
   it("returns an empty array for a generic/prebuilt-layout result (no documents field at all)", () => {
     const result = { pages: [{ pageNumber: 1, lines: [{ content: "hello" }] }], tables: [] };
     expect(extractDocumentFields(result)).toEqual([]);
+  });
+});
+
+describe("extractEffectiveFields", () => {
+  const result = {
+    documents: [
+      {
+        fields: {
+          VendorName: { content: "Acme Corp", confidence: 0.95 },
+          Total: { content: "$100.00", confidence: 0.72 },
+        },
+      },
+    ],
+  };
+
+  it("returns Azure's original value as effectiveValue, uncorrected, when there are no corrections", () => {
+    expect(extractEffectiveFields(result, {})).toEqual([
+      { name: "VendorName", originalValue: "Acme Corp", effectiveValue: "Acme Corp", isCorrected: false, confidence: 0.95 },
+      { name: "Total", originalValue: "$100.00", effectiveValue: "$100.00", isCorrected: false, confidence: 0.72 },
+    ]);
+  });
+
+  it("uses the corrected value as effectiveValue and marks the field corrected", () => {
+    const fields = extractEffectiveFields(result, { Total: "$105.00" });
+
+    expect(fields).toContainEqual({
+      name: "Total",
+      originalValue: "$100.00",
+      effectiveValue: "$105.00",
+      isCorrected: true,
+      confidence: 0.72,
+    });
+    // VendorName is untouched by the correction map.
+    expect(fields).toContainEqual({
+      name: "VendorName",
+      originalValue: "Acme Corp",
+      effectiveValue: "Acme Corp",
+      isCorrected: false,
+      confidence: 0.95,
+    });
+  });
+
+  it("is not marked corrected when the effective value happens to equal the original (e.g. corrected then reverted)", () => {
+    const fields = extractEffectiveFields(result, { Total: "$100.00" });
+    expect(fields.find((f) => f.name === "Total")?.isCorrected).toBe(false);
+  });
+
+  it("keeps Azure's original confidence even for a corrected field — a human override has no confidence of its own", () => {
+    const fields = extractEffectiveFields(result, { Total: "$105.00" });
+    expect(fields.find((f) => f.name === "Total")?.confidence).toBe(0.72);
+  });
+
+  it("returns an empty array for a generic document (no fields at all)", () => {
+    expect(extractEffectiveFields({ content: "markdown here" }, {})).toEqual([]);
+  });
+
+  it("returns an empty array for a null result", () => {
+    expect(extractEffectiveFields(null, {})).toEqual([]);
   });
 });
 

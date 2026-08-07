@@ -6,6 +6,9 @@ export type DocumentJobRow = Database["public"]["Tables"]["document_jobs"]["Row"
 export type DocumentJobInsert = Database["public"]["Tables"]["document_jobs"]["Insert"];
 export type DocumentJobUpdate = Database["public"]["Tables"]["document_jobs"]["Update"];
 
+export type FieldCorrectionRow = Database["public"]["Tables"]["document_field_corrections"]["Row"];
+export type FieldCorrectionInsert = Database["public"]["Tables"]["document_field_corrections"]["Insert"];
+
 /**
  * Encodes a `created_at` value into the opaque cursor callers pass back
  * in `GET /documents?cursor=...`. Base64url, not raw ISO text, so the
@@ -163,4 +166,42 @@ export async function listDocumentJobsForOrganization(
     jobs,
     nextCursor: hasMore && lastJob ? encodeCursor(lastJob.created_at) : null,
   };
+}
+
+/**
+ * Full chronological history for one job, oldest first — not just the
+ * latest value per field. `documents.service.ts` derives "current
+ * effective value per field" from this by taking the last row per
+ * `field_name`; the ordering here is what makes that reduction correct.
+ */
+export async function listFieldCorrections(jobId: string): Promise<FieldCorrectionRow[]> {
+  const { data, error } = await supabaseAdmin
+    .from("document_field_corrections")
+    .select("*")
+    .eq("document_job_id", jobId)
+    .order("edited_at", { ascending: true });
+
+  if (error) {
+    console.error("[documents.repository] listFieldCorrections failed", { jobId, error });
+    throw new AppError(500, "INTERNAL_ERROR", error.message);
+  }
+
+  return data ?? [];
+}
+
+/**
+ * Bulk insert — a single save-corrections request can touch several fields
+ * at once, and each is its own audit-log row. Trusts the caller to have
+ * already filtered out no-op edits (a value "corrected" to what it already
+ * was); this is a thin persistence layer, not where that decision belongs.
+ */
+export async function insertFieldCorrections(rows: FieldCorrectionInsert[]): Promise<FieldCorrectionRow[]> {
+  const { data, error } = await supabaseAdmin.from("document_field_corrections").insert(rows).select("*");
+
+  if (error || !data) {
+    console.error("[documents.repository] insertFieldCorrections failed", { rows, error });
+    throw new AppError(500, "INTERNAL_ERROR", error?.message ?? "Failed to save field corrections.");
+  }
+
+  return data;
 }

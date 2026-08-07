@@ -44,7 +44,12 @@ describe("getProcessingStrategy", () => {
     const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46]);
     const result = await getProcessingStrategy("invoice").submit(bytes, "application/pdf");
 
-    expect(azureService.beginDocumentAnalysis).toHaveBeenCalledWith(bytes, "application/pdf", "prebuilt-invoice");
+    expect(azureService.beginDocumentAnalysis).toHaveBeenCalledWith(
+      bytes,
+      "application/pdf",
+      "prebuilt-invoice",
+      undefined,
+    );
     expect(result).toEqual({
       operationReference: "https://example.com/documentModels/prebuilt-invoice/analyzeResults/abc123",
     });
@@ -59,6 +64,32 @@ describe("getProcessingStrategy", () => {
       expect.anything(),
       expect.anything(),
       "prebuilt-invoice",
+      undefined,
     );
   });
+
+  it("the generic strategy requests markdown output, so its content preserves table/section structure", async () => {
+    vi.mocked(azureService.beginDocumentAnalysis).mockResolvedValue({ operationLocation: "https://example.com/op" });
+
+    await getProcessingStrategy("generic").submit(new Uint8Array([1]), "application/pdf");
+
+    expect(azureService.beginDocumentAnalysis).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      "prebuilt-layout",
+      "markdown",
+    );
+  });
+
+  it.each(["invoice", "receipt", "identity_document"] as const)(
+    "the %s strategy does not request markdown output (only generic's raw content is ever shown as-is)",
+    async (documentType) => {
+      vi.mocked(azureService.beginDocumentAnalysis).mockResolvedValue({ operationLocation: "https://example.com/op" });
+
+      await getProcessingStrategy(documentType).submit(new Uint8Array([1]), "application/pdf");
+
+      const lastCall = vi.mocked(azureService.beginDocumentAnalysis).mock.calls.at(-1)!;
+      expect(lastCall[3]).toBeUndefined();
+    },
+  );
 });

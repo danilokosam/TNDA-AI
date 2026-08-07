@@ -9,6 +9,7 @@ export type ProfileRole = "owner" | "admin" | "member";
 export type SubscriptionStatus = "trialing" | "active" | "past_due" | "canceled" | "incomplete";
 export type DocumentJobStatus = "pending" | "processing" | "completed" | "failed" | "rejected_quota";
 export type DocumentType = "invoice" | "receipt" | "identity_document" | "generic";
+export type DocumentReviewStatus = "unreviewed" | "confirmed" | "rejected";
 
 export interface Database {
   public: {
@@ -161,6 +162,10 @@ export interface Database {
           average_confidence: number | null;
           result_json: Record<string, unknown> | null;
           error_message: string | null;
+          storage_path: string | null;
+          review_status: DocumentReviewStatus;
+          reviewed_by: string | null;
+          reviewed_at: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -177,6 +182,10 @@ export interface Database {
           average_confidence?: number | null;
           result_json?: Record<string, unknown> | null;
           error_message?: string | null;
+          storage_path?: string | null;
+          review_status?: DocumentReviewStatus;
+          reviewed_by?: string | null;
+          reviewed_at?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -193,6 +202,10 @@ export interface Database {
           average_confidence?: number | null;
           result_json?: Record<string, unknown> | null;
           error_message?: string | null;
+          storage_path?: string | null;
+          review_status?: DocumentReviewStatus;
+          reviewed_by?: string | null;
+          reviewed_at?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -206,6 +219,55 @@ export interface Database {
           {
             foreignKeyName: "document_jobs_user_id_fkey";
             columns: ["user_id"];
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "document_jobs_reviewed_by_fkey";
+            columns: ["reviewed_by"];
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      document_field_corrections: {
+        Row: {
+          id: string;
+          document_job_id: string;
+          field_name: string;
+          previous_value: string | null;
+          new_value: string;
+          edited_by: string | null;
+          edited_at: string;
+        };
+        Insert: {
+          id?: string;
+          document_job_id: string;
+          field_name: string;
+          previous_value?: string | null;
+          new_value: string;
+          edited_by?: string | null;
+          edited_at?: string;
+        };
+        Update: {
+          id?: string;
+          document_job_id?: string;
+          field_name?: string;
+          previous_value?: string | null;
+          new_value?: string;
+          edited_by?: string | null;
+          edited_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "document_field_corrections_document_job_id_fkey";
+            columns: ["document_job_id"];
+            referencedRelation: "document_jobs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "document_field_corrections_edited_by_fkey";
+            columns: ["edited_by"];
             referencedRelation: "profiles";
             referencedColumns: ["id"];
           },
@@ -238,6 +300,7 @@ export interface Database {
       subscription_status: SubscriptionStatus;
       document_job_status: DocumentJobStatus;
       document_type: DocumentType;
+      document_review_status: DocumentReviewStatus;
     };
   };
 }

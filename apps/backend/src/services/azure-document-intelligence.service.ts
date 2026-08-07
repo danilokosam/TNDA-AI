@@ -55,13 +55,22 @@ export interface AzureAnalysisSubmission {
  * pure infrastructure adapter for Azure's REST API and has no opinion on
  * *which* model a document should be analyzed with — that decision belongs
  * to the domain layer (see `src/modules/documents/documents.strategy.ts`).
+ *
+ * `outputContentFormat` is the same kind of per-call, strategy-owned choice
+ * as `modelId` — this adapter doesn't decide when it's needed, it just
+ * forwards it. Omitted, Azure's `content` field is flat reading-order text
+ * with no reconstructed tables/sections; `"markdown"` asks Azure to
+ * reconstruct that structure itself instead of this app re-deriving it from
+ * raw `pages[]`/`tables[]` coordinate data.
  */
 export async function beginDocumentAnalysis(
   bytes: Uint8Array,
   contentType: SupportedDocumentMimeType,
   modelId: string,
+  outputContentFormat?: "markdown",
 ): Promise<AzureAnalysisSubmission> {
-  const url = `${azureDocumentIntelligenceConfig.endpoint}/documentintelligence/documentModels/${modelId}:analyze?api-version=${azureDocumentIntelligenceConfig.apiVersion}`;
+  const formatParam = outputContentFormat ? `&outputContentFormat=${outputContentFormat}` : "";
+  const url = `${azureDocumentIntelligenceConfig.endpoint}/documentintelligence/documentModels/${modelId}:analyze?api-version=${azureDocumentIntelligenceConfig.apiVersion}${formatParam}`;
 
   const response = await fetchWithRetry(url, {
     method: "POST",

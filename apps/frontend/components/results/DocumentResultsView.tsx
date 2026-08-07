@@ -1,26 +1,65 @@
 "use client";
 
-import { CircleAlert, LoaderCircle } from "lucide-react";
+import { useState } from "react";
+import { CircleAlert, CircleCheck, CircleX, Clock, LoaderCircle, type LucideIcon } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { DocumentFieldsTable } from "@/components/results/DocumentFieldsTable";
 import { DocumentPreviewPanel } from "@/components/results/DocumentPreviewPanel";
 import { DocumentRawContent } from "@/components/results/DocumentRawContent";
-import { extractDocumentFields, extractRawContent } from "@/features/results/extract-fields";
+import { extractEffectiveFields, extractRawContent, isMarkdownContent } from "@/features/results/extract-fields";
+import { useConfirmReview, useFieldCorrections, useRejectReview, useSaveCorrections } from "@/features/results/hooks";
 import { useJobStatus } from "@/features/upload/hooks";
+import { ApiError } from "@/lib/api/response";
+import { cn } from "@/lib/utils";
 import { formatPercent } from "@/lib/format";
+import type { DocumentReviewStatus } from "@/types/api";
 
 interface DocumentResultsViewProps {
   jobId: string;
+}
+
+const REVIEW_STATUS_DISPLAY: Record<DocumentReviewStatus, { label: string; icon: LucideIcon; destructive?: boolean }> = {
+  unreviewed: { label: "Unreviewed", icon: Clock },
+  confirmed: { label: "Confirmed", icon: CircleCheck },
+  rejected: { label: "Rejected", icon: CircleX },
+};
+
+function mutationErrorMessage(error: unknown): string {
+  return error instanceof ApiError ? error.message : "Something went wrong. Please try again.";
 }
 
 /**
  * Live status via `useJobStatus` (backoff-polled, stops on a terminal
  * status — see `poll-schedule.ts`), not a one-shot server fetch: a job
  * reached right after upload is commonly still `pending`/`processing`.
+ *
+ * The review workflow (edit fields, save corrections, confirm/reject) is
+ * the document review workspace this page is meant to be — see the
+ * review-workflow plan. `draft` is local, unsaved edits only; the
+ * server-confirmed effective value (Azure's original, or the latest saved
+ * correction) always comes from `useFieldCorrections`. All hooks are
+ * called unconditionally, before any of the early-return states below —
+ * `useFieldCorrections`'s own `enabled` flag (not a conditional hook call)
+ * is what skips fetching corrections for a job with nothing to correct yet.
  */
 export function DocumentResultsView({ jobId }: DocumentResultsViewProps) {
   const { data: job, isLoading, isError } = useJobStatus(jobId);
+  const { data: corrections } = useFieldCorrections(jobId, job?.status === "completed");
+  const saveCorrections = useSaveCorrections();
+  const confirmReview = useConfirmReview();
+  const rejectReview = useRejectReview();
+  const [draft, setDraft] = useState<Record<string, string>>({});
+  // Resets the draft when `jobId` changes — adjusted during render (React's
+  // documented pattern for this), not an effect: there's no external system
+  // to synchronize with here, just local state that needs to not leak
+  // between two different jobs' review sessions.
+  const [draftJobId, setDraftJobId] = useState(jobId);
+  if (jobId !== draftJobId) {
+    setDraftJobId(jobId);
+    setDraft({});
+  }
 
   if (isLoading) {
     return (
@@ -61,26 +100,93 @@ export function DocumentResultsView({ jobId }: DocumentResultsViewProps) {
     );
   }
 
-  const fields = extractDocumentFields(job.resultJson);
+  const fields = extractEffectiveFields(job.resultJson, corrections?.effective ?? {});
   const rawContent = extractRawContent(job.resultJson);
   const hasExtractedData = fields.length > 0 || rawContent !== null;
+  const rawContentView =
+    rawContent !== null ? (
+      <DocumentRawContent content={rawContent} format={isMarkdownContent(job.documentType) ? "markdown" : "text"} />
+    ) : null;
+
+  const reviewDisplay = REVIEW_STATUS_DISPLAY[job.reviewStatus];
+  const ReviewIcon = reviewDisplay.icon;
+  const isDirty = Object.keys(draft).length > 0;
+  const isMutating = saveCorrections.isPending || confirmReview.isPending || rejectReview.isPending;
+  const mutationError = saveCorrections.error ?? confirmReview.error ?? rejectReview.error;
+
+  const handleFieldChange = (name: string, value: string) => {
+    setDraft((previous) => ({ ...previous, [name]: value }));
+  };
+
+  const handleSave = () => {
+    saveCorrections.mutate({ jobId, corrections: draft }, { onSuccess: () => setDraft({}) });
+  };
+
+  const handleConfirm = () => {
+    confirmReview.mutate({ jobId, corrections: draft }, { onSuccess: () => setDraft({}) });
+  };
+
+  const handleReject = () => {
+    rejectReview.mutate({ jobId, corrections: draft }, { onSuccess: () => setDraft({}) });
+  };
 
   return (
-    <div className="grid gap-4 lg:grid-cols-2">
-      <div className="space-y-4">
-        {job.averageConfidence !== null ? (
-          <p className="text-sm text-muted-foreground">Average confidence: {formatPercent(job.averageConfidence)}</p>
-        ) : null}
-        {hasExtractedData ? (
-          <>
-            <DocumentFieldsTable fields={fields} />
-            <DocumentRawContent content={rawContent} />
-          </>
-        ) : (
-          <p className="text-sm text-muted-foreground">No extracted data available.</p>
-        )}
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-3">
+        <div
+          className={cn(
+            "flex items-center gap-1.5 text-sm",
+            reviewDisplay.destructive ? "text-destructive" : "text-muted-foreground",
+          )}
+        >
+          <ReviewIcon className="size-3.5" />
+          <span>{reviewDisplay.label}</span>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {fields.length > 0 ? (
+            <Button variant="outline" size="sm" disabled={!isDirty || isMutating} onClick={handleSave}>
+              {saveCorrections.isPending ? "Saving…" : "Save corrections"}
+            </Button>
+          ) : null}
+          <Button variant="secondary" size="sm" disabled={isMutating} onClick={handleConfirm}>
+            {confirmReview.isPending ? "Confirming…" : "Confirm"}
+          </Button>
+          <Button variant="destructive" size="sm" disabled={isMutating} onClick={handleReject}>
+            {rejectReview.isPending ? "Rejecting…" : "Reject"}
+          </Button>
+        </div>
       </div>
-      <DocumentPreviewPanel jobId={jobId} />
+
+      {mutationError ? (
+        <Alert variant="destructive">
+          <CircleAlert />
+          <AlertDescription>{mutationErrorMessage(mutationError)}</AlertDescription>
+        </Alert>
+      ) : null}
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <div className="space-y-4">
+          {job.averageConfidence !== null ? (
+            <p className="text-sm text-muted-foreground">Average confidence: {formatPercent(job.averageConfidence)}</p>
+          ) : null}
+          {hasExtractedData ? (
+            <>
+              <DocumentFieldsTable fields={fields} draft={draft} onFieldChange={handleFieldChange} />
+              {fields.length > 0 && rawContentView ? (
+                <details className="text-sm">
+                  <summary className="cursor-pointer text-muted-foreground">Show raw extracted text</summary>
+                  <div className="mt-2">{rawContentView}</div>
+                </details>
+              ) : (
+                rawContentView
+              )}
+            </>
+          ) : (
+            <p className="text-sm text-muted-foreground">No extracted data available.</p>
+          )}
+        </div>
+        <DocumentPreviewPanel jobId={jobId} />
+      </div>
     </div>
   );
 }

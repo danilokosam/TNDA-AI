@@ -45,11 +45,15 @@ export interface DocumentProcessingStrategy {
 }
 
 /** A strategy that delegates straight to an Azure Document Intelligence prebuilt model. */
-function createAzurePrebuiltStrategy(documentType: DocumentType, azureModelId: string): DocumentProcessingStrategy {
+function createAzurePrebuiltStrategy(
+  documentType: DocumentType,
+  azureModelId: string,
+  outputContentFormat?: "markdown",
+): DocumentProcessingStrategy {
   return {
     documentType,
     async submit(bytes, mimeType) {
-      const { operationLocation } = await beginDocumentAnalysis(bytes, mimeType, azureModelId);
+      const { operationLocation } = await beginDocumentAnalysis(bytes, mimeType, azureModelId, outputContentFormat);
       return { operationReference: operationLocation };
     },
   };
@@ -74,7 +78,16 @@ const STRATEGIES: Record<DocumentType, DocumentProcessingStrategy> = {
   // uses prebuilt-layout instead: still a real, current model, and a
   // better fit for "generic" anyway (pure OCR/structure, no domain
   // assumptions at all, vs. prebuilt-document's key-value heuristics).
-  generic: createAzurePrebuiltStrategy("generic", "prebuilt-layout"),
+  //
+  // Requests markdown output specifically: generic is the one document
+  // type whose raw `content` is shown to the user as-is (the other three
+  // are field-shaped — see extract-fields.ts on the frontend), and Azure's
+  // default (flat, reading-order) text loses table/section structure that
+  // markdown output reconstructs instead. Scoped to generic only, not
+  // applied to the other three strategies, since their `content` isn't
+  // surfaced in the UI and this hasn't been verified against a live Azure
+  // call for those models.
+  generic: createAzurePrebuiltStrategy("generic", "prebuilt-layout", "markdown"),
 };
 
 export function getProcessingStrategy(documentType: DocumentType): DocumentProcessingStrategy {

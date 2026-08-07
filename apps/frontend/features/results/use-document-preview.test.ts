@@ -1,12 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderHook } from "@testing-library/react";
-import { cacheFileForPreview } from "@/features/results/preview-cache";
-import { useDocumentPreview } from "@/features/results/use-document-preview";
+import { createQueryWrapper } from "../../test/query-client-wrapper";
+
+vi.mock("@/lib/api/http", () => ({
+  apiFetch: vi.fn(),
+}));
+
+const { apiFetch } = await import("@/lib/api/http");
+const { cacheFileForPreview } = await import("@/features/results/preview-cache");
+const { useDocumentPreview } = await import("@/features/results/use-document-preview");
 
 describe("useDocumentPreview", () => {
   let revokeSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
+    vi.clearAllMocks();
     revokeSpy = vi.spyOn(URL, "revokeObjectURL");
   });
 
@@ -14,50 +22,73 @@ describe("useDocumentPreview", () => {
     revokeSpy.mockRestore();
   });
 
-  it("returns unavailable when no file is cached for this jobId", () => {
-    const { result } = renderHook(() => useDocumentPreview("no-such-job"));
-    expect(result.current).toEqual({ kind: "unavailable" });
+  it("returns a remote-url source once the backend confirms a persisted file", async () => {
+    vi.mocked(apiFetch).mockResolvedValue({ url: "https://signed.example/x" });
+
+    const { result } = renderHook(() => useDocumentPreview("job_remote_1"), { wrapper: createQueryWrapper() });
+
+    await vi.waitFor(() => expect(result.current).toEqual({ kind: "remote-url", url: "https://signed.example/x" }));
   });
 
-  it("returns a session-blob source when a file is cached", () => {
+  it("falls back to the session cache while the signed-url fetch is still in flight", () => {
     const file = new File(["content"], "invoice.pdf", { type: "application/pdf" });
-    cacheFileForPreview("job_preview_1", file);
+    cacheFileForPreview("job_fastpath_1", file);
+    vi.mocked(apiFetch).mockReturnValue(new Promise(() => {})); // never resolves in this test
 
-    const { result } = renderHook(() => useDocumentPreview("job_preview_1"));
+    const { result } = renderHook(() => useDocumentPreview("job_fastpath_1"), { wrapper: createQueryWrapper() });
 
     expect(result.current.kind).toBe("session-blob");
-    expect(result.current.kind === "session-blob" && result.current.url.startsWith("blob:")).toBe(true);
   });
 
-  it("revokes the created blob URL on unmount", () => {
+  it("falls back to the session cache when the backend confirms no persisted file exists", async () => {
     const file = new File(["content"], "invoice.pdf", { type: "application/pdf" });
-    cacheFileForPreview("job_preview_2", file);
+    cacheFileForPreview("job_fallback_1", file);
+    vi.mocked(apiFetch).mockResolvedValue({ url: null });
 
-    const { result, unmount } = renderHook(() => useDocumentPreview("job_preview_2"));
+    const { result } = renderHook(() => useDocumentPreview("job_fallback_1"), { wrapper: createQueryWrapper() });
+
+    await vi.waitFor(() => expect(result.current.kind).toBe("session-blob"));
+  });
+
+  it("prefers the remote url over the session cache when both are available", async () => {
+    const file = new File(["content"], "invoice.pdf", { type: "application/pdf" });
+    cacheFileForPreview("job_both_1", file);
+    vi.mocked(apiFetch).mockResolvedValue({ url: "https://signed.example/x" });
+
+    const { result } = renderHook(() => useDocumentPreview("job_both_1"), { wrapper: createQueryWrapper() });
+
+    await vi.waitFor(() => expect(result.current).toEqual({ kind: "remote-url", url: "https://signed.example/x" }));
+  });
+
+  it("returns unavailable when there is neither a remote file nor a session-cached one", async () => {
+    vi.mocked(apiFetch).mockResolvedValue({ url: null });
+
+    const { result } = renderHook(() => useDocumentPreview("job_none_1"), { wrapper: createQueryWrapper() });
+
+    await vi.waitFor(() => expect(result.current).toEqual({ kind: "unavailable" }));
+  });
+
+  it("returns loading — not unavailable — while the fetch is in flight and nothing is session-cached", () => {
+    vi.mocked(apiFetch).mockReturnValue(new Promise(() => {}));
+
+    const { result } = renderHook(() => useDocumentPreview("job_loading_1"), { wrapper: createQueryWrapper() });
+
+    expect(result.current).toEqual({ kind: "loading" });
+  });
+
+  it("revokes a session-cache blob url on unmount", async () => {
+    const file = new File(["content"], "invoice.pdf", { type: "application/pdf" });
+    cacheFileForPreview("job_revoke_1", file);
+    vi.mocked(apiFetch).mockResolvedValue({ url: null });
+
+    const { result, unmount } = renderHook(() => useDocumentPreview("job_revoke_1"), {
+      wrapper: createQueryWrapper(),
+    });
+    await vi.waitFor(() => expect(result.current.kind).toBe("session-blob"));
     const createdUrl = result.current.kind === "session-blob" ? result.current.url : null;
-    expect(createdUrl).not.toBeNull();
 
     unmount();
 
     expect(revokeSpy).toHaveBeenCalledWith(createdUrl);
-  });
-
-  it("revokes the previous URL and creates a fresh one when jobId changes", () => {
-    const fileA = new File(["a"], "a.pdf");
-    const fileB = new File(["b"], "b.pdf");
-    cacheFileForPreview("job_preview_a", fileA);
-    cacheFileForPreview("job_preview_b", fileB);
-
-    const { result, rerender } = renderHook(({ jobId }) => useDocumentPreview(jobId), {
-      initialProps: { jobId: "job_preview_a" },
-    });
-    const firstUrl = result.current.kind === "session-blob" ? result.current.url : null;
-    expect(firstUrl).not.toBeNull();
-
-    rerender({ jobId: "job_preview_b" });
-
-    expect(revokeSpy).toHaveBeenCalledWith(firstUrl);
-    expect(result.current.kind).toBe("session-blob");
-    expect(result.current.kind === "session-blob" && result.current.url).not.toBe(firstUrl);
   });
 });

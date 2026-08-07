@@ -16,10 +16,17 @@ vi.mock("@/modules/documents/documents.repository", () => ({
   getDocumentJobForOrganization: vi.fn(),
   updateDocumentJob: vi.fn(),
   listDocumentJobsForOrganization: vi.fn(),
+  listFieldCorrections: vi.fn(),
+  insertFieldCorrections: vi.fn(),
+}));
+
+vi.mock("@/services/storage.service", () => ({
+  createSignedPreviewUrl: vi.fn(),
 }));
 
 const { supabaseAdmin } = await import("@/config/supabase");
 const documentsRepository = await import("@/modules/documents/documents.repository");
+const storageService = await import("@/services/storage.service");
 const { documentsRoutes } = await import("@/modules/documents/documents.routes");
 
 /** No `.listen()` anywhere - requests are dispatched in-process via `.handle()`. */
@@ -46,6 +53,9 @@ const jobDtoSchema = z.object({
   averageConfidence: z.number().nullable(),
   resultJson: z.record(z.string(), z.unknown()).nullable(),
   errorMessage: z.string().nullable(),
+  reviewStatus: z.string(),
+  reviewedBy: z.string().nullable(),
+  reviewedAt: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -97,6 +107,10 @@ function jobRow(overrides: Partial<DocumentJobRow> = {}): DocumentJobRow {
     document_type: "invoice",
     average_confidence: 0.9,
     result_json: null,
+    storage_path: null,
+    review_status: "unreviewed",
+    reviewed_by: null,
+    reviewed_at: null,
     error_message: null,
     created_at: "2026-01-15T00:00:00.000Z",
     updated_at: "2026-01-15T00:00:05.000Z",
@@ -140,6 +154,9 @@ describe("GET /api/v1/documents", () => {
         averageConfidence: 0.9,
         resultJson: null,
         errorMessage: null,
+        reviewStatus: "unreviewed",
+        reviewedBy: null,
+        reviewedAt: null,
         createdAt: "2026-01-15T00:00:00.000Z",
         updatedAt: "2026-01-15T00:00:05.000Z",
       },
@@ -228,5 +245,224 @@ describe("GET /api/v1/documents", () => {
     const body = listResponseSchema.parse(await response.json());
 
     expect(body.data[0]?.averageConfidence).toBeNull();
+  });
+});
+
+describe("GET /api/v1/documents/jobs/:id/preview-url", () => {
+  it("returns 401 without a bearer token", async () => {
+    const response = await app.handle(new Request("http://localhost/api/v1/documents/jobs/11111111-1111-1111-1111-111111111111/preview-url"));
+    expect(response.status).toBe(401);
+  });
+
+  it("returns a signed url when the job has a persisted file", async () => {
+    mockAuthenticated();
+    vi.mocked(documentsRepository.getDocumentJobForOrganization).mockResolvedValue(
+      jobRow({ storage_path: "org_1/job_1/invoice.pdf" }),
+    );
+    vi.mocked(storageService.createSignedPreviewUrl).mockResolvedValue("https://signed.example/x");
+
+    const response = await app.handle(
+      new Request("http://localhost/api/v1/documents/jobs/11111111-1111-1111-1111-111111111111/preview-url", { headers: AUTH_HEADERS }),
+    );
+    const body = z.object({ url: z.string().nullable() }).parse(await response.json());
+
+    expect(response.status).toBe(200);
+    expect(body.url).toBe("https://signed.example/x");
+  });
+
+  it("returns { url: null } — not a 404 — when the job has no persisted file", async () => {
+    mockAuthenticated();
+    vi.mocked(documentsRepository.getDocumentJobForOrganization).mockResolvedValue(
+      jobRow({ storage_path: null }),
+    );
+
+    const response = await app.handle(
+      new Request("http://localhost/api/v1/documents/jobs/11111111-1111-1111-1111-111111111111/preview-url", { headers: AUTH_HEADERS }),
+    );
+    const body = z.object({ url: z.string().nullable() }).parse(await response.json());
+
+    expect(response.status).toBe(200);
+    expect(body.url).toBeNull();
+  });
+
+  it("scopes the lookup to the authenticated caller's own organization", async () => {
+    mockAuthenticated();
+    vi.mocked(documentsRepository.getDocumentJobForOrganization).mockResolvedValue(jobRow());
+
+    await app.handle(
+      new Request("http://localhost/api/v1/documents/jobs/11111111-1111-1111-1111-111111111111/preview-url", { headers: AUTH_HEADERS }),
+    );
+
+    expect(documentsRepository.getDocumentJobForOrganization).toHaveBeenCalledWith(
+      "11111111-1111-1111-1111-111111111111",
+      "org_1",
+    );
+  });
+});
+
+const JOB_URL = "http://localhost/api/v1/documents/jobs/11111111-1111-1111-1111-111111111111";
+
+function correctionRow(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: "correction_1",
+    document_job_id: "11111111-1111-1111-1111-111111111111",
+    field_name: "VendorName",
+    previous_value: "Acme Corp",
+    new_value: "Acme Corporation",
+    edited_by: "user_1",
+    edited_at: "2026-01-15T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+describe("GET /api/v1/documents/jobs/:id/corrections", () => {
+  it("returns 401 without a bearer token", async () => {
+    const response = await app.handle(new Request(`${JOB_URL}/corrections`));
+    expect(response.status).toBe(401);
+  });
+
+  it("returns the effective value per field plus the full history, camelCased", async () => {
+    mockAuthenticated();
+    vi.mocked(documentsRepository.getDocumentJobForOrganization).mockResolvedValue(jobRow());
+    vi.mocked(documentsRepository.listFieldCorrections).mockResolvedValue([correctionRow()]);
+
+    const response = await app.handle(new Request(`${JOB_URL}/corrections`, { headers: AUTH_HEADERS }));
+
+    expect(response.status).toBe(200);
+    const body = z
+      .object({
+        effective: z.record(z.string(), z.string()),
+        history: z.array(
+          z.object({
+            fieldName: z.string(),
+            previousValue: z.string().nullable(),
+            newValue: z.string(),
+            editedBy: z.string().nullable(),
+            editedAt: z.string(),
+          }),
+        ),
+      })
+      .parse(await response.json());
+
+    expect(body.effective).toEqual({ VendorName: "Acme Corporation" });
+    expect(body.history).toEqual([
+      {
+        fieldName: "VendorName",
+        previousValue: "Acme Corp",
+        newValue: "Acme Corporation",
+        editedBy: "user_1",
+        editedAt: "2026-01-15T00:00:00.000Z",
+      },
+    ]);
+  });
+});
+
+describe("PATCH /api/v1/documents/jobs/:id/corrections", () => {
+  it("returns 401 without a bearer token", async () => {
+    const response = await app.handle(new Request(`${JOB_URL}/corrections`, { method: "PATCH" }));
+    expect(response.status).toBe(401);
+  });
+
+  it("saves the corrections and returns the (unreviewed) job", async () => {
+    mockAuthenticated();
+    vi.mocked(documentsRepository.getDocumentJobForOrganization).mockResolvedValue(
+      jobRow({ result_json: { documents: [{ fields: { Total: { content: "$50.00" } } }] } }),
+    );
+    vi.mocked(documentsRepository.listFieldCorrections).mockResolvedValue([]);
+    vi.mocked(documentsRepository.insertFieldCorrections).mockResolvedValue([correctionRow()]);
+
+    const response = await app.handle(
+      new Request(`${JOB_URL}/corrections`, {
+        method: "PATCH",
+        headers: { ...AUTH_HEADERS, "Content-Type": "application/json" },
+        body: JSON.stringify({ corrections: { Total: "$55.00" } }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(documentsRepository.insertFieldCorrections).toHaveBeenCalledWith([
+      {
+        document_job_id: "job_1",
+        field_name: "Total",
+        previous_value: "$50.00",
+        new_value: "$55.00",
+        edited_by: "user_1",
+      },
+    ]);
+    const body = jobDtoSchema.parse(await response.json());
+    expect(body.reviewStatus).toBe("unreviewed");
+  });
+
+  it("returns 409 CONFLICT when the job hasn't finished processing", async () => {
+    mockAuthenticated();
+    vi.mocked(documentsRepository.getDocumentJobForOrganization).mockResolvedValue(jobRow({ status: "processing" }));
+
+    const response = await app.handle(
+      new Request(`${JOB_URL}/corrections`, {
+        method: "PATCH",
+        headers: { ...AUTH_HEADERS, "Content-Type": "application/json" },
+        body: JSON.stringify({ corrections: { Total: "$55.00" } }),
+      }),
+    );
+
+    expect(response.status).toBe(409);
+    const body = errorEnvelopeSchema.parse(await response.json());
+    expect(body.error.code).toBe("CONFLICT");
+  });
+});
+
+describe("POST /api/v1/documents/jobs/:id/confirm", () => {
+  it("returns 401 without a bearer token", async () => {
+    const response = await app.handle(new Request(`${JOB_URL}/confirm`, { method: "POST" }));
+    expect(response.status).toBe(401);
+  });
+
+  it("marks the job confirmed, attributed to the authenticated caller", async () => {
+    mockAuthenticated();
+    vi.mocked(documentsRepository.getDocumentJobForOrganization).mockResolvedValue(jobRow());
+    vi.mocked(documentsRepository.updateDocumentJob).mockResolvedValue(
+      jobRow({ review_status: "confirmed", reviewed_by: "user_1", reviewed_at: "2026-01-16T00:00:00.000Z" }),
+    );
+
+    const response = await app.handle(
+      new Request(`${JOB_URL}/confirm`, {
+        method: "POST",
+        headers: { ...AUTH_HEADERS, "Content-Type": "application/json" },
+        body: JSON.stringify({ corrections: {} }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(documentsRepository.updateDocumentJob).toHaveBeenCalledWith(
+      "job_1",
+      expect.objectContaining({ review_status: "confirmed", reviewed_by: "user_1" }),
+    );
+    const body = jobDtoSchema.parse(await response.json());
+    expect(body.reviewStatus).toBe("confirmed");
+  });
+});
+
+describe("POST /api/v1/documents/jobs/:id/reject", () => {
+  it("returns 401 without a bearer token", async () => {
+    const response = await app.handle(new Request(`${JOB_URL}/reject`, { method: "POST" }));
+    expect(response.status).toBe(401);
+  });
+
+  it("marks the job rejected", async () => {
+    mockAuthenticated();
+    vi.mocked(documentsRepository.getDocumentJobForOrganization).mockResolvedValue(jobRow());
+    vi.mocked(documentsRepository.updateDocumentJob).mockResolvedValue(jobRow({ review_status: "rejected" }));
+
+    const response = await app.handle(
+      new Request(`${JOB_URL}/reject`, {
+        method: "POST",
+        headers: { ...AUTH_HEADERS, "Content-Type": "application/json" },
+        body: JSON.stringify({ corrections: {} }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = jobDtoSchema.parse(await response.json());
+    expect(body.reviewStatus).toBe("rejected");
   });
 });

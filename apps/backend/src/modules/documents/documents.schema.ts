@@ -32,6 +32,18 @@ export const jobIdParamSchema = z.object({
 });
 
 /**
+ * Shared by all three review-mutation endpoints (save corrections,
+ * confirm, reject) — the frontend always sends this exact shape, even
+ * when there's nothing to correct (`corrections: {}`), so the route
+ * handlers never have to treat a missing body as a distinct case from an
+ * empty one.
+ */
+export const documentCorrectionsSchema = z.object({
+  corrections: z.record(z.string(), z.string()),
+});
+export type DocumentCorrectionsInput = z.infer<typeof documentCorrectionsSchema>;
+
+/**
  * Cursor is opaque to callers by design (an encoded `created_at` value) -
  * clients pass back exactly what they were given in `pagination.nextCursor`,
  * never construct one themselves. That's what lets the pagination strategy

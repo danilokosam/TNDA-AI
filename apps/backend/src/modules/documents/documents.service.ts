@@ -2,17 +2,22 @@ import { env } from "@/config/env";
 import { inspectDocumentFile, type InspectedFile, type SupportedDocumentMimeType } from "@/utils/file-inspector";
 import { extractZipEntries } from "@/utils/zip";
 import { computeAverageConfidence } from "@/utils/confidence";
-import { AppError, PayloadTooLargeError, QuotaExceededError, ValidationError } from "@/utils/errors";
+import { AppError, ConflictError, PayloadTooLargeError, QuotaExceededError, ValidationError } from "@/utils/errors";
 import { getAnalysisOperationStatus } from "@/services/azure-document-intelligence.service";
+import { buildStoragePath, createSignedPreviewUrl, uploadDocumentFile } from "@/services/storage.service";
 import { getProcessingStrategy, type DocumentType } from "@/modules/documents/documents.strategy";
 import { getEffectivePlan } from "@/modules/organization/organization.service";
 import { getDocumentsSubmittedSince, getMonthlyPagesUsed, type PlanRow } from "@/modules/organization/organization.repository";
 import {
   createDocumentJob,
   getDocumentJobForOrganization,
+  insertFieldCorrections,
   listDocumentJobsForOrganization,
+  listFieldCorrections,
   updateDocumentJob,
   type DocumentJobRow,
+  type FieldCorrectionInsert,
+  type FieldCorrectionRow,
   type ListDocumentJobsFilters,
   type ListDocumentJobsResult,
 } from "@/modules/documents/documents.repository";
@@ -77,6 +82,30 @@ function checkMonthlyQuota(plan: PlanRow, quota: QuotaState, pageCount: number):
   }
 
   return { ok: true };
+}
+
+/**
+ * Persists the original file to Storage and records its path on the job.
+ * Deliberately non-fatal: a storage hiccup shouldn't block the user from
+ * getting their extracted data — `storage_path` just stays `null`, and the
+ * preview UI already has an honest "unavailable" state for exactly that.
+ * Never called for a `rejected_quota` job — nothing worth storing for a
+ * submission that never proceeds.
+ */
+async function persistOriginalFile(
+  jobId: string,
+  organizationId: string,
+  fileName: string,
+  bytes: Uint8Array,
+  mimeType: SupportedDocumentMimeType,
+): Promise<void> {
+  try {
+    const storagePath = buildStoragePath(organizationId, jobId, fileName);
+    await uploadDocumentFile(storagePath, bytes, mimeType);
+    await updateDocumentJob(jobId, { storage_path: storagePath });
+  } catch (error) {
+    console.error("[documents.service] failed to persist original file to storage", { jobId, error });
+  }
 }
 
 /**
@@ -151,6 +180,8 @@ export async function processSingleDocument(
     status: "pending",
     document_type: documentType,
   });
+
+  await persistOriginalFile(job.id, organizationId, fileName, bytes, inspected.mimeType);
 
   return submitForAnalysis(job.id, bytes, inspected.mimeType, documentType);
 }
@@ -247,6 +278,8 @@ export async function processZipBatch(
       document_type: documentType,
     });
 
+    await persistOriginalFile(job.id, organizationId, entry.fileName, entry.bytes, inspected.mimeType);
+
     try {
       await submitForAnalysis(job.id, entry.bytes, inspected.mimeType, documentType);
       quota.pagesUsed += inspected.pageCount;
@@ -333,9 +366,203 @@ export async function getJobStatus(organizationId: string, jobId: string): Promi
   return job;
 }
 
+/**
+ * `null` when the job has no persisted file (storage upload failed, or the
+ * job predates persistence) — the caller (the route) turns that into
+ * `{url: null}`, not a 404, since "no preview" is a legitimate, expected
+ * state, not an error. A fresh signed URL is generated per call rather
+ * than cached anywhere; see `storage.service.ts#createSignedPreviewUrl`
+ * for the expiry.
+ */
+export async function getDocumentPreviewUrl(organizationId: string, jobId: string): Promise<string | null> {
+  const job = await getDocumentJobForOrganization(jobId, organizationId);
+
+  if (!job.storage_path) {
+    return null;
+  }
+
+  return createSignedPreviewUrl(job.storage_path);
+}
+
 export async function listDocuments(
   organizationId: string,
   filters: ListDocumentJobsFilters,
 ): Promise<ListDocumentJobsResult> {
   return listDocumentJobsForOrganization(organizationId, filters);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Azure's original value for one named field, read directly from
+ * `result_json`. Mirrors the lookup half of the frontend's
+ * `extract-fields.ts#extractDisplayValue` (kept in sync by hand — see that
+ * file; duplicating this ~10-line lookup was judged cheaper than wiring up
+ * the still-unpopulated `@tnda-ai/shared` package for one function), but
+ * returns `null` rather than a "—" display placeholder where there's
+ * nothing to show: this feeds `document_field_corrections.previous_value`,
+ * an audit column, not UI text. Needed only to seed a field's *first-ever*
+ * correction; every correction after that reads its prior value from
+ * `document_field_corrections` itself (see `reduceToEffectiveFields`).
+ * Like `extractDocumentFields`, assumes field names are unique enough to
+ * key by — the first match across `documents[]` wins.
+ */
+function extractOriginalFieldValue(resultJson: Record<string, unknown> | null, fieldName: string): string | null {
+  if (!resultJson) return null;
+  const documents = resultJson.documents;
+  if (!Array.isArray(documents)) return null;
+
+  for (const doc of documents) {
+    if (!isRecord(doc) || !isRecord(doc.fields)) continue;
+    const field = doc.fields[fieldName];
+    if (!isRecord(field)) continue;
+    if (typeof field.content === "string" && field.content.length > 0) return field.content;
+    if (typeof field.value === "string" || typeof field.value === "number") return String(field.value);
+    return null;
+  }
+
+  return null;
+}
+
+/**
+ * Reduces a job's full, chronologically-ordered correction history
+ * (`listFieldCorrections` returns oldest-first) down to the latest value
+ * per field — the "effective" value a reviewer currently sees, as opposed
+ * to the full audit trail of how it got there.
+ */
+function reduceToEffectiveFields(history: FieldCorrectionRow[]): Record<string, string> {
+  const effective: Record<string, string> = {};
+  for (const correction of history) {
+    effective[correction.field_name] = correction.new_value;
+  }
+  return effective;
+}
+
+function assertJobIsCompleted(job: DocumentJobRow): void {
+  if (job.status !== "completed") {
+    throw new ConflictError("This document hasn't finished processing yet, so it can't be reviewed.");
+  }
+}
+
+/**
+ * Compares each submitted correction against the field's current effective
+ * value (the latest prior correction, or Azure's original extraction) and
+ * stages only the ones that actually change something — a field "corrected"
+ * to the value it already effectively has produces no new audit-log row.
+ */
+async function stageFieldCorrections(
+  job: DocumentJobRow,
+  userId: string,
+  corrections: Record<string, string>,
+): Promise<FieldCorrectionInsert[]> {
+  const history = await listFieldCorrections(job.id);
+  const effective = reduceToEffectiveFields(history);
+
+  const staged: FieldCorrectionInsert[] = [];
+  for (const [fieldName, newValue] of Object.entries(corrections)) {
+    const previousValue = effective[fieldName] ?? extractOriginalFieldValue(job.result_json, fieldName);
+    if (newValue === previousValue) continue;
+
+    staged.push({
+      document_job_id: job.id,
+      field_name: fieldName,
+      previous_value: previousValue,
+      new_value: newValue,
+      edited_by: userId,
+    });
+  }
+
+  return staged;
+}
+
+export async function getFieldCorrections(
+  organizationId: string,
+  jobId: string,
+): Promise<{ effective: Record<string, string>; history: FieldCorrectionRow[] }> {
+  const job = await getDocumentJobForOrganization(jobId, organizationId);
+  const history = await listFieldCorrections(job.id);
+  return { effective: reduceToEffectiveFields(history), history };
+}
+
+/**
+ * Saves corrections without deciding confirm/reject. If the job was
+ * previously confirmed/rejected, that decision is reset to `unreviewed`
+ * first (and only then are the new corrections inserted) — so a partial
+ * failure never leaves `review_status` claiming a decision the data no
+ * longer backs. See ARCHITECTURE.md / the review-workflow plan for the
+ * full reasoning; the short version is: the write that could make a false
+ * claim always goes last.
+ */
+export async function saveFieldCorrections(
+  organizationId: string,
+  jobId: string,
+  userId: string,
+  corrections: Record<string, string>,
+): Promise<DocumentJobRow> {
+  const job = await getDocumentJobForOrganization(jobId, organizationId);
+  assertJobIsCompleted(job);
+
+  const staged = await stageFieldCorrections(job, userId, corrections);
+
+  let resultJob = job;
+  if (job.review_status !== "unreviewed") {
+    resultJob = await updateDocumentJob(job.id, { review_status: "unreviewed", reviewed_by: null, reviewed_at: null });
+  }
+
+  if (staged.length > 0) {
+    await insertFieldCorrections(staged);
+  }
+
+  return resultJob;
+}
+
+/**
+ * Shared by `confirmDocumentReview`/`rejectDocumentReview`. Any
+ * accompanying corrections are inserted *before* the final review_status
+ * write, not after — so if only one step succeeds, it's the corrections
+ * (a job left at its old, honest status), never a status that claims a
+ * decision over data that didn't actually save.
+ */
+async function setDocumentReview(
+  organizationId: string,
+  jobId: string,
+  userId: string,
+  reviewStatus: "confirmed" | "rejected",
+  corrections: Record<string, string> | undefined,
+): Promise<DocumentJobRow> {
+  const job = await getDocumentJobForOrganization(jobId, organizationId);
+  assertJobIsCompleted(job);
+
+  if (corrections && Object.keys(corrections).length > 0) {
+    const staged = await stageFieldCorrections(job, userId, corrections);
+    if (staged.length > 0) {
+      await insertFieldCorrections(staged);
+    }
+  }
+
+  return updateDocumentJob(job.id, {
+    review_status: reviewStatus,
+    reviewed_by: userId,
+    reviewed_at: new Date().toISOString(),
+  });
+}
+
+export function confirmDocumentReview(
+  organizationId: string,
+  jobId: string,
+  userId: string,
+  corrections?: Record<string, string>,
+): Promise<DocumentJobRow> {
+  return setDocumentReview(organizationId, jobId, userId, "confirmed", corrections);
+}
+
+export function rejectDocumentReview(
+  organizationId: string,
+  jobId: string,
+  userId: string,
+  corrections?: Record<string, string>,
+): Promise<DocumentJobRow> {
+  return setDocumentReview(organizationId, jobId, userId, "rejected", corrections);
 }

@@ -1,5 +1,6 @@
 "use client";
 
+import { Skeleton } from "@/components/ui/skeleton";
 import { useDocumentPreview } from "@/features/results/use-document-preview";
 
 interface DocumentPreviewPanelProps {
@@ -16,10 +17,15 @@ interface DocumentPreviewPanelProps {
 export function DocumentPreviewPanel({ jobId }: DocumentPreviewPanelProps) {
   const source = useDocumentPreview(jobId);
 
+  if (source.kind === "loading") {
+    return <Skeleton className="h-full min-h-96 w-full rounded-lg" />;
+  }
+
   if (source.kind === "unavailable") {
     return (
-      <div className="flex h-full min-h-48 items-center justify-center rounded-lg border border-dashed text-sm text-muted-foreground">
-        Preview unavailable
+      <div className="flex h-full min-h-48 flex-col items-center justify-center gap-1 rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground">
+        <p>Preview unavailable</p>
+        <p className="max-w-64 text-xs">No stored copy of this document could be found.</p>
       </div>
     );
   }

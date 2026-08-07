@@ -23,6 +23,7 @@ interface QueryResult {
 function createQueryBuilderMock(result: QueryResult) {
   const chain: any = {
     select: vi.fn(() => chain),
+    insert: vi.fn(() => chain),
     eq: vi.fn(() => chain),
     order: vi.fn(() => chain),
     limit: vi.fn(() => chain),
@@ -33,6 +34,19 @@ function createQueryBuilderMock(result: QueryResult) {
     then: (onfulfilled: (value: QueryResult) => unknown) => Promise.resolve(result).then(onfulfilled),
   };
   return chain;
+}
+
+function correctionRow(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: "correction_1",
+    document_job_id: "job_1",
+    field_name: "VendorName",
+    previous_value: "Acme Corp",
+    new_value: "Acme Corporation",
+    edited_by: "user_1",
+    edited_at: "2026-01-15T00:00:00.000Z",
+    ...overrides,
+  };
 }
 
 function jobRow(overrides: Partial<Record<string, unknown>> = {}) {
@@ -162,5 +176,54 @@ describe("listDocumentJobsForOrganization", () => {
     await expect(documentsRepository.listDocumentJobsForOrganization("org_1", { limit: 20 })).rejects.toThrow(
       AppError,
     );
+  });
+});
+
+describe("listFieldCorrections", () => {
+  it("scopes to the job and orders oldest first (full chronological history)", async () => {
+    const chain = createQueryBuilderMock({ data: [correctionRow()], error: null });
+    vi.mocked(supabaseAdmin.from).mockReturnValue(chain);
+
+    const result = await documentsRepository.listFieldCorrections("job_1");
+
+    expect(supabaseAdmin.from).toHaveBeenCalledWith("document_field_corrections");
+    expect(chain.eq).toHaveBeenCalledWith("document_job_id", "job_1");
+    expect(chain.order).toHaveBeenCalledWith("edited_at", { ascending: true });
+    expect(result).toEqual([correctionRow()]);
+  });
+
+  it("throws AppError when Supabase returns an error", async () => {
+    const chain = createQueryBuilderMock({ data: null, error: { message: "db exploded" } });
+    vi.mocked(supabaseAdmin.from).mockReturnValue(chain);
+
+    await expect(documentsRepository.listFieldCorrections("job_1")).rejects.toThrow(AppError);
+  });
+});
+
+describe("insertFieldCorrections", () => {
+  it("inserts the given rows and returns them", async () => {
+    const rows = [correctionRow({ id: "correction_1" }), correctionRow({ id: "correction_2", field_name: "Total" })];
+    const chain = createQueryBuilderMock({ data: rows, error: null });
+    vi.mocked(supabaseAdmin.from).mockReturnValue(chain);
+
+    const input = [
+      { document_job_id: "job_1", field_name: "VendorName", previous_value: "Acme Corp", new_value: "Acme Corporation", edited_by: "user_1" },
+    ];
+    const result = await documentsRepository.insertFieldCorrections(input);
+
+    expect(supabaseAdmin.from).toHaveBeenCalledWith("document_field_corrections");
+    expect(chain.insert).toHaveBeenCalledWith(input);
+    expect(result).toEqual(rows);
+  });
+
+  it("throws AppError when Supabase returns an error", async () => {
+    const chain = createQueryBuilderMock({ data: null, error: { message: "db exploded" } });
+    vi.mocked(supabaseAdmin.from).mockReturnValue(chain);
+
+    await expect(
+      documentsRepository.insertFieldCorrections([
+        { document_job_id: "job_1", field_name: "Total", previous_value: null, new_value: "$50.00", edited_by: "user_1" },
+      ]),
+    ).rejects.toThrow(AppError);
   });
 });

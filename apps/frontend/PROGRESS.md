@@ -207,3 +207,147 @@ Resolves the routing question the project-root `PROGRESS.md`'s own §9 had left 
 Full workspace `typecheck`/`lint`/`test` clean after every slice (extraction, preview cache, preview hook, upload-controller wiring, each of the four components, the route) — 46 new tests, 140 total, 234 with the backend's 94.
 
 **No browser tool available this session either, and unlike every prior stage, no `curl`-based fallback check was attempted this time.** Results' actually-meaningful states — `pending`/`processing` with a real in-flight job, `completed` with real extracted fields and a real preview — all need a real, already-processed document job to exist first, which needs either a real Azure Document Intelligence call or a database seed (the same constraint that already left the Dashboard's populated view and Stage 3's interactive upload flow unverified, §4 and §6 above). Rather than fetch just the route's bare HTML shell via `curl` (which would prove little beyond "it doesn't 500 with no job data," already covered by the `isError` test) the user chose to verify this stage directly, manually, in a real browser — before this document was even updated. **As of this commit, Stage 4's correctness rests entirely on the automated test suite; the one class of bug this project has already hit once (§6 above) is exactly the kind that suite cannot see.**
+
+*(Confirmed in a real browser in a later session — no discrete update was made here at the time, since the very next work was the architecture-documentation pass and then Stage 5 directly. Inferred from Stage 5 having subsequently been authorized and built, which this project's own established gate wouldn't have allowed otherwise. See the root `PROGRESS.md` §2 for the same note.)*
+
+## 8. Stage 5: Document History (2026-08-07)
+
+Built via the same incremental TDD loop as Stages 3-4 — types/contracts, failing tests, minimal implementation, full-workspace verify, one feature category at a time. Also backfilled two pieces of previously-zero test coverage found along the way: the backend's `listDocuments`/`GET /documents` path and this app's own list-fetching plumbing, neither of which had dedicated tests despite existing since Stage 2. 94 backend + 197 frontend tests by the end (up from 94/140).
+
+### Data layer: `features/documents/`
+
+`filters.ts` — `DocumentsFilters` (status/documentType/search/dateFrom/dateTo), `DocumentsListState {filters, cursors}` where `cursors` is a **stack** of prior page cursors, not just the current one, so "Previous" can walk backward through keyset pages without the backend needing to support reverse pagination (it doesn't — `documents.repository.ts#listDocumentJobsForOrganization`, Stage 2, is forward-cursor-only, unchanged). `documentsListReducer` handles four actions: `set-filter` (also resets the cursor stack — changing a filter invalidates whatever page you were on), `reset-filters`, `next-page` (pushes the just-returned `nextCursor`), `prev-page` (pops the stack). `currentCursor(state)` reads the top of the stack. `query.ts#buildDocumentsListPath` turns `{filters, cursor}` into the exact query-string shape `GET /documents` has accepted since Stage 2 — this stage added zero backend surface, purely a new consumer of an already-tested endpoint. `hooks.ts#useDocumentsList` wraps it in a `useQuery` keyed `["documents-list", params]`.
+
+### `hooks/use-debounced-value.ts`
+
+A new, generic `useDebouncedValue<T>(value, delayMs)` — not documents-specific, deliberately placed at the top-level `hooks/` (not `features/documents/`) since nothing about it is domain-specific. The filter bar's free-text search input debounces through this before it ever reaches `DocumentsFilters`, so typing doesn't fire one request per keystroke.
+
+### Components: `components/documents/`
+
+- `DocumentsFilterBar` — status/type `<select>`s, the debounced search `<input>`, a date-range pair, and an always-visible "Clear filters" button (see the bug below for why "always-visible" specifically matters).
+- `DocumentsTable` — a plain `<table>`, matching `DocumentFieldsTable`'s Stage-4 precedent (see below for why `@tanstack/react-table` still isn't used).
+- `DocumentsPagination` — Previous/Next, driven by the cursor stack; Previous disabled at the stack's bottom, Next disabled once the API stops returning a `nextCursor`.
+- `DocumentsWorkspace` — composition point, replacing the Stage-1 stub at `/documents`.
+
+### `@tanstack/react-table` still isn't used
+
+Installed since Stage 0, still unused after Stage 4 and now Stage 5. On inspection, the actually-installed major version (9.0.0) has a materially different, more complex API (`useTable` + `TableFeatures` + store atoms) than the familiar v8 API (`useReactTable`/`getCoreRowModel`/`createColumnHelper`) that both the original plan and this stage's own first instinct assumed. Given this table needs no sorting, selection, or expansion, plain HTML markup — the same call `DocumentFieldsTable` already made — was judged the better fit both times: a deliberate architectural choice, confirmed by a second real instance, not a one-off workaround.
+
+### A real UX bug, found during the build
+
+Once a filter was active and returned zero results, **two** "Clear filters" buttons were simultaneously visible with identical labels — the filter bar's own always-present button, and a second, redundant action button inside the empty state. Beyond being visually confusing for a real user, it broke a straightforward `getByRole("button", {name: /clear filters/i})` test query outright ("found multiple elements"). Fixed by removing the empty-state's own action button — the filter bar's is already visible above it in every case where that empty-state message can even show.
+
+### A fake-timer + `act()` gotcha, distinct from Stage 3's `waitFor` issue
+
+`use-debounced-value.test.ts`: a bare `await vi.advanceTimersByTimeAsync(...)` correctly fired the underlying `setTimeout`, but the resulting `setState` never showed up in `renderHook`'s `result.current` afterward. Ruled out an implementation bug first — the identical failure reproduced whether the fake time was advanced in one large jump or many small steps, which wouldn't be true if the debounce's own timing logic were wrong. Root cause: a hand-rolled `useEffect`+`setTimeout`+`useState` pattern's timer-driven update needs its fake-timer advancement explicitly wrapped in `act(async () => {...})` to be reflected — distinct from `useJobStatus`'s own `refetchInterval` (TanStack Query's internal scheduling), which doesn't need this wrapping despite also being timer-driven. Fixed by wrapping each `vi.advanceTimersByTimeAsync` step in `act()`; documented directly in the test file's own comment, since this is exactly the kind of environment gotcha worth not rediscovering next time.
+
+### Verification
+
+Full workspace `typecheck`/`lint`/`test` green — 94 backend + 197 frontend tests. **Confirmed in a real browser** by the user: filters, search, pagination, empty states, navigation, and the browser console all checked directly — and two real, separate issues were found during that pass, reported immediately per this project's established pattern rather than after PROGRESS.md/commit. See §9.
+
+## 9. Two bugs from Stage 5's manual verification (2026-08-07)
+
+Investigated with an explicit instruction to find root cause, not patch symptoms, before touching PROGRESS.md or committing anything — same discipline as §6's crash investigation.
+
+### Issue 1 — "Preview unavailable" reached via History or a page reload
+
+Investigated the entire preview pipeline end to end: the upload flow's `cacheFileForPreview` call, `preview-cache.ts`'s module-level `Map`, the `DocumentPreviewSource` union, `useDocumentPreview`'s blob-URL creation/cleanup. Conclusion: this was the correct, honest behavior of a real, already-documented Stage-4 limitation (§7 above) — the preview cache is genuinely session-only, browser-memory state, and a job reached via History (a separate navigation from the immediate post-upload flow) or a fresh page load has nothing cached to show. Not a bug in code that existed — a real product gap in what that code was ever scoped to cover. This conclusion is what triggered §10's redesign; the fix wasn't a better "unavailable" message, it was persisting the file for real.
+
+### Issue 2 — garbled raw-content text for `generic` documents
+
+Root cause traced to the backend, not the frontend: Azure was never asked for its Markdown output format, so `resultJson.content` was flat, reading-order-only text — the table/section structure Azure's own model *does* capture (in `pages[]`/`tables[]`) was discarded on the way to that flat string, leaving nothing for a plain-text rendering to preserve. Backend fix: `azure-document-intelligence.service.ts#beginDocumentAnalysis` gained an optional `outputContentFormat?: "markdown"` parameter; `documents.strategy.ts`'s `generic` strategy entry (only) now passes it — invoice/receipt/identity_document don't, since their `content` isn't the primary thing shown to the user and this hadn't been verified against a live Azure response for those specific models. On this app's side, `DocumentRawContent`'s text rendering got a minimal, deliberately temporary readability fix in the same pass — switched to a monospace font, so a Markdown table's `|`/`-` characters at least read as a rough grid — fully superseded by §11's real Markdown rendering a few steps later; kept only long enough to bridge to that redesign.
+
+Both issues together are what prompted the user to explicitly pause new feature work and request an architecture redesign instead of further incremental patches — see §10-§12.
+
+## 10. Architecture redesign, Part 1: persistent document storage (2026-08-07)
+
+Framed explicitly as intentional architecture evolution, not a bug fix: move the original uploaded file from session-only browser memory to real backend-persisted Supabase Storage, so it's retrievable from any screen, not just the tab that did the upload. Planned together with two other pieces (Part 2, §11, and a file-lifecycle design later absorbed into a larger redesign, §12) via Plan Mode; sequencing (plan all three, implement Part 1 first) and the eventual delete model (soft-delete job rows, hard-delete only the file) were both confirmed with the user via `AskUserQuestion` before any code.
+
+### Storage & schema
+
+Migration `0011_document_storage.sql` (backend, `apps/backend/supabase/migrations/`) — this app doesn't own migrations, but the schema shape is directly relevant to what the frontend now consumes: a private `documents` Storage bucket, `document_jobs.storage_path text` (nullable — null means no file persisted, either predating the migration or a non-fatal upload failure), and a `storage.objects` RLS policy as defense-in-depth (real enforcement stays the backend's service-role client, same model as `document_jobs` itself).
+
+### Backend surface this app now consumes
+
+A new `GET /jobs/:id/preview-url` → `{url: string | null}`, deliberately separate from the job status DTO rather than a field on it — embedding a signed URL in `JobDto` would mean generating one on every routine status *poll* while a job is still processing, when there's nothing to preview yet.
+
+### `use-document-preview.ts`, rewritten
+
+Previously a `useEffect` reading only the session cache (§7). Now a `useQuery` against the new `preview-url` endpoint (BFF route: `app/api/documents/[jobId]/preview-url/route.ts`, mirroring `[jobId]/route.ts`'s existing shape exactly), plus the session cache retained as a secondary fast-path/fallback:
+
+- A resolved signed URL always wins when present — the persisted file is the real source of truth now.
+- The session cache (`preview-cache.ts`, otherwise unchanged) is consulted only for an instant render while the signed-URL fetch is still in flight, or as a last resort if server-side storage genuinely failed for that job.
+- It is never consulted once the backend has positively confirmed one way or the other, and never overrides a real signed URL.
+
+**A real gap found and fixed proactively while implementing this, not present in the original plan**: without care, the hook would return `unavailable` both while the signed-URL query was still loading *and* once genuinely confirmed empty — meaning a reloaded or History-opened job would flash "Preview unavailable" for a moment before its real preview arrived. Fixed by adding a fourth variant, `loading`, to `DocumentPreviewSource` (now `loading | session-blob | remote-url | unavailable`, up from three at Stage 4), using TanStack Query's `isPending` specifically to distinguish "don't know yet" from "confirmed nothing." `DocumentPreviewPanel` gained a matching `<Skeleton>` branch; its "unavailable" copy was updated (it used to explicitly say "only available in the same browser tab," which is no longer true for anything uploaded after this migration).
+
+Pre-existing jobs (uploaded before `0011`) have `storage_path = null` permanently and fall back to session-cache-or-unavailable exactly as before — stated plainly, not silently glossed over, since there's no original file left anywhere to backfill.
+
+### Verification
+
+Full workspace `typecheck`/`lint`/`test` green. **Confirmed in a real browser**: the uploaded file appears in the actual Supabase Storage bucket; the Results-page preview loads via a real signed URL (checked the `<iframe>`'s `src` in DevTools — not a `blob:` URL); survives a full page reload; also works reaching the same job via the History table — the two specific cases Issue 1 (§9) identified as broken.
+
+## 11. Architecture redesign, Part 2: Results-page information architecture (2026-08-07)
+
+Investigated before writing any code, per explicit instruction, rather than jumping straight to "add a Markdown renderer." Confirmed directly from source that `result_json` is Azure's entire response, stored verbatim/untyped — `paragraphs[]`, `tables[]`, `pages[]` (word/line bounding boxes) all arrive and are all persisted, but this app has only ever read two things out of it: `documents[].fields` and the flat `content` string. `generic` documents have no `documents[].fields` at all.
+
+### Three options weighed for the raw-content panel's canonical representation
+
+(a) Render Azure's own Markdown `content` properly. (b) Bypass `content` entirely and reconstruct a custom viewer directly from `paragraphs[]`/`tables[]`, which carry `role` (title/sectionHeading/etc.) and bounding regions that a flat string doesn't — real future value for a positional "click a field, see it highlighted on the source" review UI. (c) something else.
+
+**Rejected (b) explicitly, for this pass**: Azure's own Markdown conversion already does the reading-order paragraph/table interleaving correctly; there's no live Azure response sample anywhere in this repository to validate a hand-built reconstruction against; and nothing is actually lost by deferring it, since the full untouched payload stays persisted in `result_json` regardless of which rendering approach runs today — a future structured/positional viewer remains just as buildable later, off the same stored data. Went with (a).
+
+### A second, real bug this investigation surfaced
+
+`DocumentResultsView` was unconditionally rendering `DocumentRawContent` whenever `content` was non-null, for **all four** document types — meaning invoice/receipt/identity_document jobs were showing their fields table *and* a full raw-text dump at equal visual prominence, uncollapsed. This directly contradicted the backend's own `documents.strategy.ts` code comment, which claimed those three types' content "isn't surfaced in the UI." The comment was simply stale relative to what this component actually did; the behavior needed fixing regardless of what the comment claimed.
+
+### Implementation
+
+Added `react-markdown`+`remark-gfm`+`@tailwindcss/typography` (none previously installed; the typography plugin wired into `app/globals.css` via `@plugin "@tailwindcss/typography";`, Tailwind v4's CSS-based plugin registration). `DocumentRawContent` gained a `format: "markdown" | "text"` prop — the Markdown pipeline (`<ReactMarkdown remarkPlugins={[remarkGfm]}>` inside a `prose prose-sm dark:prose-invert` container) applies only when `format === "markdown"`; `"text"` keeps the prior preformatted/monospace rendering byte-for-byte unchanged. This split is a correctness matter, not just presentation: only `generic` documents actually receive Markdown from Azure (§9) — running the other three types' plain OCR text through a Markdown parser risks misinterpreting incidental characters (a line starting with `"- "`, a stray `#`/`_` in an address or ID number) as formatting instead of literal content. A new `extract-fields.ts#isMarkdownContent(documentType)` decides which format applies, hand-mirroring the backend's own per-type routing table (`documents.strategy.ts`) — the same hand-kept-in-sync, dated-comment convention `types/api.ts` already uses for `DOCUMENT_TYPES` itself.
+
+`react-markdown`'s default behavior never renders raw HTML embedded in the source as live elements (`rehype-raw` was deliberately not added) — confirmed with a dedicated test, since this Markdown ultimately originates from a scanned document, not a trusted author, and this is exactly the kind of assumption worth verifying rather than taking on faith.
+
+Fixed the stale-comment bug above by collapsing `DocumentRawContent` behind a native `<details><summary>Show raw extracted text</summary></details>` whenever structured fields also exist, leaving it at full prominence only for `generic` (where it's the only extracted content there is). No new dependency — a native disclosure element, consistent with this app's existing native-element-over-new-primitive precedent (e.g. `DocumentTypeSelect`'s plain `<select>`, Stage 3).
+
+### Verification
+
+Full workspace `typecheck`/`lint`/`test` green. **Confirmed in a real browser**: a `generic` document's raw-content panel renders real headings and a bordered table instead of literal `#`/`|` characters; an invoice/receipt/identity_document's raw content is now collapsed behind "Show raw extracted text," with the underlying text itself unchanged once expanded.
+
+## 12. Document review workflow redesign — Phase 1 (2026-08-07)
+
+After Part 2 was confirmed, the user reported the remaining gap wasn't a rendering problem: the Documents list only exposes a "View" action, and the Results page is read-only with no way to correct a wrong extraction or record that a human reviewed it. Requested a full architecture proposal — review, field editing, confirmation/rejection, Storage lifecycle, future audit/history, multi-document-type support — before any code.
+
+### Planning
+
+Investigated the current architecture directly (routes, schema, repository/service functions, existing frontend patterns — confirmed `components/ui/dropdown-menu.tsx` already exists and is already used for a multi-action row in `UserMenu.tsx`; confirmed no `Dialog`/`AlertDialog` primitive exists anywhere yet; confirmed `react-hook-form` is used only for the two auth forms) via Plan Mode, using a Plan subagent to draft and independently verify a proposal against real source before it was presented back. Two decisions were confirmed via `AskUserQuestion`:
+
+- **Field corrections get a full, per-edit audit-history table**, not a simpler "latest value only" column — chosen specifically because the user named future audit/history as a first-class requirement, and the lighter option would have permanently lost any intermediate edit the moment it was superseded by a later one.
+- **Any organization member — not just the uploader or an owner/admin — can edit fields, save corrections, confirm, or reject.** Matches how viewing already works (org-scoped, not uploader-scoped); destructive actions (remove the original file, delete the document — Phase 2, not yet built) stay restricted to the uploader or an owner/admin, the already-agreed model from an earlier, smaller file-lifecycle design that this larger redesign absorbed as its own later phase.
+
+The approved plan sequences three phases — **Phase 1 (this section)**, Phase 2 (file lifecycle), Phase 3 (Documents-list fast-follow: a delete/remove-file menu, a review-status badge). Only Phase 1 is built.
+
+### Data layer: `extract-fields.ts#extractEffectiveFields`
+
+Merges Azure's originally-extracted fields (`extractDocumentFields`, Stage 4, unchanged) with the new corrections endpoint's effective-value map into `{name, originalValue, effectiveValue, isCorrected, confidence}[]`. `isCorrected` compares the *current* effective value against the original, not "does any correction exist for this field name" — a field corrected and then manually reverted back to Azure's original value correctly reads as uncorrected again, matching the backend's own audit-log semantics (a correction event still exists in `document_field_corrections`, but nothing about the *current* display should claim the field is still edited). `confidence` always stays Azure's original score even for a corrected field — a human override has no confidence of its own to report, so `DocumentFieldsTable` shows "Edited" in its place rather than a now-stale percentage.
+
+### `features/results/hooks.ts` (new)
+
+`useFieldCorrections(jobId, enabled)` — a `useQuery` against the new `GET .../corrections` endpoint; `enabled` is meant to be driven by the caller's own job-status check (`job?.status === "completed"`), since a job with no result yet has nothing to correct. `useSaveCorrections`/`useConfirmReview`/`useRejectReview` — three thin `useMutation` wrappers sharing one internal `useReviewMutation(path, method)` helper (same endpoint shape: `{corrections}` body in, a `JobDto` back), each invalidating `["job-status", jobId]`, `["field-corrections", jobId]`, and `["documents-list"]` on success — the last one specifically so the Documents list (once Phase 3 gives it a review-status badge) doesn't need its own separate invalidation plumbing bolted on later.
+
+### `DocumentFieldsTable`, evolved from read-only to always-editable
+
+Confirmed via a fresh grep that its only real consumer is `DocumentResultsView` (two other hits were doc-comment mentions, not imports) — safe to change its prop shape directly rather than needing a parallel component. Now takes `{fields: EffectiveField[], draft: Record<string,string>, onFieldChange}`; each row's value renders as a controlled `<input>` (shadcn's `Input`), not static text. **No separate view/edit-mode toggle** — the Results page's stated purpose is now a document review workspace where correcting a value is the core action, not an occasional one, so an extra click to "enter edit mode" first would be pure friction with no real benefit (nothing saves until "Save corrections"/"Confirm"/"Reject" is explicitly clicked, so there's no accidental-edit risk to guard against either).
+
+### `DocumentResultsView`, the action bar
+
+A full-width bar above the existing two-column fields/preview layout: a review-status badge (`Unreviewed`/`Confirmed`/`Rejected`, following the exact `{label, icon}` display-map convention `DocumentsTable`'s own `STATUS_DISPLAY` already established for processing status, Stage 5), "Save corrections" (enabled only when the local edit draft is non-empty; not rendered at all for `generic` documents, which have no fields), "Confirm," "Reject," with inline error feedback (an `Alert`) if any of the three mutations fails.
+
+**`react-hook-form` was deliberately not reused here**, despite being this app's established pattern for its two other forms (login/signup). RHF earns its keep there through schema-driven validation (`zodResolver`) against a fixed, known-ahead-of-time field set. Neither holds for corrections: the field set is dynamic and Azure-determined (a different, variable-length list per document), and a corrected value has no real validation rule to enforce beyond "an arbitrary replacement string." A plain `useState` draft — `Record<string, string>`, diffed for a dirty check — covers what's actually needed without RHF's added surface area for schema-driven validation this form doesn't need.
+
+### A lint-driven fix worth recording as a pattern
+
+Resetting the local edit draft whenever `jobId` changes was first written as a `useEffect` calling `setState` — `react-hooks/set-state-in-effect` correctly flagged this as avoidable, unlike Stage 4's blob-URL case (§7), which genuinely needs an effect for its paired resource-cleanup semantics (create a blob URL, revoke it on cleanup — an external browser resource). This case has no external resource at all, just local state that shouldn't leak between two different jobs' review sessions — fixed using React's own documented "adjust state during render" pattern instead (a `draftJobId` comparison directly in the render body, resetting the draft synchronously within the same render pass), not another scoped disable comment. Worth remembering as the *other* half of the `set-state-in-effect` story this project has now hit twice: sometimes the effect is genuinely correct and the rule needs a documented override (§7's blob-URL case); sometimes it's flagging something structurally avoidable, and the fix should actually change the code.
+
+### Verification
+
+Full workspace `typecheck`/`lint`/`test` green — 146 backend + 250 frontend tests (up from 94/197). **Confirmed in a real browser**: editing a field and saving without confirming persists correctly across a reload while review status stays "Unreviewed"; confirming a document and then editing a field again correctly reverts its status to "Unreviewed" automatically; reject behaves the same way; `generic` documents correctly get confirm/reject with no field-editing UI; no console errors or React warnings throughout.

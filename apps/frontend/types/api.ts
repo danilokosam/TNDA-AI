@@ -224,6 +224,7 @@ export const DOCUMENT_TYPES = ["invoice", "receipt", "identity_document", "gener
 export type DocumentType = (typeof DOCUMENT_TYPES)[number];
 
 export type DocumentJobStatus = Database["public"]["Enums"]["document_job_status"];
+export type DocumentReviewStatus = Database["public"]["Enums"]["document_review_status"];
 
 /** camelCase wire shape from `documents.routes.ts#toJobDto` — not a raw DB row. */
 export const jobDtoSchema = z.object({
@@ -236,11 +237,15 @@ export const jobDtoSchema = z.object({
   averageConfidence: z.number().nullable(),
   resultJson: z.record(z.string(), z.unknown()).nullable(),
   errorMessage: z.string().nullable(),
+  reviewStatus: z.enum(["unreviewed", "confirmed", "rejected"]),
+  reviewedBy: z.string().nullable(),
+  reviewedAt: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
 export type JobDto = z.infer<typeof jobDtoSchema>;
 export const _checkJobStatus: AssertExact<JobDto["status"], DocumentJobStatus> = true;
+export const _checkReviewStatus: AssertExact<JobDto["reviewStatus"], DocumentReviewStatus> = true;
 
 /**
  * `GET /documents` query params (`documents.schema.ts#listDocumentsQuerySchema`).
@@ -268,6 +273,50 @@ export const documentsListResponseSchema = z.object({
   }),
 });
 export type DocumentsListResponse = z.infer<typeof documentsListResponseSchema>;
+
+/**
+ * `GET /documents/jobs/:id/preview-url` response shape. `url` is `null`,
+ * never a 404, when the job has no persisted file (storage upload failed,
+ * or the job predates persistent storage) — a real, expected state, not
+ * an error (see `documents.service.ts#getDocumentPreviewUrl`).
+ */
+export const previewUrlResponseSchema = z.object({ url: z.string().nullable() });
+export type PreviewUrlResponse = z.infer<typeof previewUrlResponseSchema>;
+
+/**
+ * `GET /documents/jobs/:id/corrections` response shape
+ * (`documents.routes.ts#toFieldCorrectionDto`). `effective` is the latest
+ * value per field — what the review UI edits and displays; `history` is
+ * the full chronological audit trail behind it (every edit, by whom, from
+ * what, to what).
+ */
+export const fieldCorrectionSchema = z.object({
+  fieldName: z.string(),
+  previousValue: z.string().nullable(),
+  newValue: z.string(),
+  editedBy: z.string().nullable(),
+  editedAt: z.string(),
+});
+export type FieldCorrection = z.infer<typeof fieldCorrectionSchema>;
+
+export const fieldCorrectionsResponseSchema = z.object({
+  effective: z.record(z.string(), z.string()),
+  history: z.array(fieldCorrectionSchema),
+});
+export type FieldCorrectionsResponse = z.infer<typeof fieldCorrectionsResponseSchema>;
+
+/**
+ * Request body shared by `PATCH .../corrections`, `POST .../confirm`, and
+ * `POST .../reject` (`documents.schema.ts#documentCorrectionsSchema`) — an
+ * outgoing shape the frontend constructs itself, same convention as
+ * `ListDocumentsParams` above (not a Zod schema; the backend re-validates
+ * independently on receipt regardless). `corrections` is always sent, even
+ * when empty, so the backend never has to treat a missing body as a
+ * distinct case from an empty one.
+ */
+export interface DocumentCorrectionsRequest {
+  corrections: Record<string, string>;
+}
 
 // ---------------------------------------------------------------------------
 // Organization stats (modules/organization/organization.service.ts#getJobStats)

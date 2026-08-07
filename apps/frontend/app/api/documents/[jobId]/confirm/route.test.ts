@@ -1,0 +1,47 @@
+// @vitest-environment node
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@/services/documents.service", () => ({
+  confirmDocumentReview: vi.fn(),
+}));
+
+const documentsService = await import("@/services/documents.service");
+const { POST } = await import("@/app/api/documents/[jobId]/confirm/route");
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
+
+describe("POST /api/documents/:jobId/confirm", () => {
+  it("forwards the JSON body to the service and returns the updated job", async () => {
+    const job = { jobId: "job_42", reviewStatus: "confirmed" };
+    vi.mocked(documentsService.confirmDocumentReview).mockResolvedValue(job as never);
+
+    const response = await POST(
+      new Request("http://localhost/api/documents/job_42/confirm", {
+        method: "POST",
+        body: JSON.stringify({ corrections: {} }),
+      }),
+      { params: Promise.resolve({ jobId: "job_42" }) },
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(job);
+    expect(documentsService.confirmDocumentReview).toHaveBeenCalledWith("job_42", { corrections: {} });
+  });
+
+  it("translates a thrown service error into the uniform error envelope", async () => {
+    const { ApiError } = await import("@/lib/api/response");
+    vi.mocked(documentsService.confirmDocumentReview).mockRejectedValue(new ApiError(409, "CONFLICT", "Not completed yet."));
+
+    const response = await POST(
+      new Request("http://localhost/api/documents/job_42/confirm", {
+        method: "POST",
+        body: JSON.stringify({ corrections: {} }),
+      }),
+      { params: Promise.resolve({ jobId: "job_42" }) },
+    );
+
+    expect(response.status).toBe(409);
+  });
+});
