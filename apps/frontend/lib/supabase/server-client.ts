@@ -4,11 +4,13 @@ import { createServerClient } from "@supabase/ssr";
 import { env } from "@/lib/env";
 
 /**
- * The one place `@supabase/ssr`'s cookie-backed session lives. Used both
- * for direct-to-Supabase reads (RLS-scoped document history/stats — the
- * backend has no list endpoint) and for the session lifecycle itself
- * (`setSession()` after the backend's own signup/login, `getUser()` for
- * refresh in `proxy.ts`, `signOut()` on logout).
+ * The one place `@supabase/ssr`'s cookie-backed session lives — identity
+ * plumbing only (session/cookie lifecycle: `setSession()` after the
+ * backend's own signup/login, `getUser()` for refresh in `proxy.ts`,
+ * `signOut()` on logout, `getAccessToken()` below for forwarding to the
+ * backend). Never used for direct-to-Supabase application-data reads — the
+ * backend is the single source of truth for those (see PROGRESS.md §4
+ * decision 1); document history/stats go through real backend endpoints.
  *
  * `setAll`'s write can throw when called from a Server Component (which
  * can't set cookies) — safe to swallow, because `proxy.ts` already

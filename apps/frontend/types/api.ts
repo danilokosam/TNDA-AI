@@ -232,6 +232,8 @@ export const jobDtoSchema = z.object({
   fileName: z.string(),
   fileSizeBytes: z.number(),
   pageCount: z.number().nullable(),
+  documentType: z.enum(DOCUMENT_TYPES),
+  averageConfidence: z.number().nullable(),
   resultJson: z.record(z.string(), z.unknown()).nullable(),
   errorMessage: z.string().nullable(),
   createdAt: z.string(),
@@ -239,6 +241,50 @@ export const jobDtoSchema = z.object({
 });
 export type JobDto = z.infer<typeof jobDtoSchema>;
 export const _checkJobStatus: AssertExact<JobDto["status"], DocumentJobStatus> = true;
+
+/**
+ * `GET /documents` query params (`documents.schema.ts#listDocumentsQuerySchema`).
+ * A plain interface, not a Zod schema — this is an outgoing request shape the
+ * frontend itself constructs (from URL search params or Dashboard's fixed
+ * window), not an untrusted payload that needs runtime validation here; the
+ * backend re-validates it independently on receipt regardless.
+ */
+export interface ListDocumentsParams {
+  status?: DocumentJobStatus;
+  documentType?: DocumentType;
+  search?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  cursor?: string;
+  limit?: number;
+}
+
+/** `GET /documents` response shape (`documents.routes.ts`'s `{data, pagination}`). */
+export const documentsListResponseSchema = z.object({
+  data: z.array(jobDtoSchema),
+  pagination: z.object({
+    nextCursor: z.string().nullable(),
+    hasMore: z.boolean(),
+  }),
+});
+export type DocumentsListResponse = z.infer<typeof documentsListResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Organization stats (modules/organization/organization.service.ts#getJobStats)
+// ---------------------------------------------------------------------------
+
+/** `GET /organizations/me/stats` response shape — mirrors `JobStats` exactly. */
+export const organizationStatsSchema = z.object({
+  completedJobs: z.number(),
+  failedJobs: z.number(),
+  totalJobs: z.number(),
+  /** `null`, never a fabricated 0, when there's no terminal job in the window. */
+  successRate: z.number().nullable(),
+  avgProcessingSeconds: z.number().nullable(),
+  /** Gap-filled server-side — always one entry per day in the window, never sparse. */
+  dailyCounts: z.array(z.object({ date: z.string(), count: z.number() })),
+});
+export type OrganizationStats = z.infer<typeof organizationStatsSchema>;
 
 export const batchFileResultSchema = z.object({
   fileName: z.string(),
