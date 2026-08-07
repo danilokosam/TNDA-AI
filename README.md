@@ -11,6 +11,14 @@ This is a pnpm + Turborepo monorepo with two applications:
 
 `packages/` holds cross-cutting workspace infrastructure — currently `config` (a shared base `tsconfig.json`, real and in use by both apps) and `types`/`shared` (scaffolded and wired into the workspace, intentionally not yet populated — see [`PROGRESS.md`](./PROGRESS.md) for why).
 
+## Documentation
+
+| Document | What it's for |
+|---|---|
+| [`ARCHITECTURE.md`](./ARCHITECTURE.md) | The canonical, current-state architecture reference — what the system is, how its pieces fit together, and why. Start here. |
+| [`docs/adr/`](./docs/adr/) | Architecture Decision Records — the fuller Context/Decision/Consequences record behind the most significant individual decisions referenced from `ARCHITECTURE.md`. |
+| [`PROGRESS.md`](./PROGRESS.md) | The chronological session log — decisions as they were made, bugs found and fixed, verification performed. [`apps/backend/PROGRESS.md`](./apps/backend/PROGRESS.md) and [`apps/frontend/PROGRESS.md`](./apps/frontend/PROGRESS.md) hold the same, at finer per-app detail. |
+
 ## Getting started
 
 ```bash
@@ -37,7 +45,7 @@ Run from the root, fanned out across the workspace via [Turborepo](https://turbo
 | `pnpm build` | Production build (applies to `apps/frontend`; the backend runs directly from source via Bun) |
 | `pnpm typecheck` | `tsc --noEmit` across every app and package |
 | `pnpm lint` | ESLint across every app |
-| `pnpm test` | Backend's Vitest suite (the frontend has no test suite yet) |
+| `pnpm test` | Both apps' Vitest suites |
 
 ## Repository structure
 
