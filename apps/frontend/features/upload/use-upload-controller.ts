@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { useUploadDocument } from "@/features/upload/hooks";
 import { useUploadQueue } from "@/features/upload/queue";
+import { cacheFileForPreview } from "@/features/results/preview-cache";
 import { ApiError } from "@/lib/api/response";
 
 /**
@@ -28,6 +29,12 @@ export function useUploadController() {
       { file: next.file, documentType: next.documentType },
       {
         onSuccess: (response) => {
+          // Only a single-file upload maps 1:1 to one job — a .zip batch's
+          // individual entries were never separately accessible client-side
+          // to begin with, so there's no file to cache for any of them.
+          if (response.kind === "single") {
+            cacheFileForPreview(response.job.jobId, next.file);
+          }
           queue.dispatch({ type: "upload-succeeded", id: next.id, response });
         },
         onError: (error) => {

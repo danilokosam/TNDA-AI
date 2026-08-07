@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { CircleCheck, CircleX, Clock, FileText, LoaderCircle, TriangleAlert, X, type LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -43,6 +44,11 @@ export function UploadQueueItemRow({ item, onRemove }: UploadQueueItemRowProps) 
           ) : null}
         </div>
         {item.errorMessage ? <p className="text-xs text-destructive">{item.errorMessage}</p> : null}
+        {item.status === "completed" && item.jobId ? (
+          <Button asChild variant="link" size="xs" className="h-auto p-0">
+            <Link href={`/documents/${item.jobId}`}>View results</Link>
+          </Button>
+        ) : null}
       </div>
       <Button type="button" variant="ghost" size="icon-sm" onClick={onRemove} aria-label={`Remove ${item.file.name}`}>
         <X />

@@ -62,4 +62,22 @@ describe("UploadQueueItemRow", () => {
 
     expect(onRemove).toHaveBeenCalledOnce();
   });
+
+  it("links to the results page for a completed item with a jobId", () => {
+    render(<UploadQueueItemRow item={itemFixture({ status: "completed", jobId: "job_1" })} onRemove={vi.fn()} />);
+
+    expect(screen.getByRole("link", { name: /view results/i })).toHaveAttribute("href", "/documents/job_1");
+  });
+
+  it("does not show a results link for a completed item with no jobId", () => {
+    render(<UploadQueueItemRow item={itemFixture({ status: "completed", jobId: null })} onRemove={vi.fn()} />);
+
+    expect(screen.queryByRole("link", { name: /view results/i })).not.toBeInTheDocument();
+  });
+
+  it("does not show a results link for a non-completed item", () => {
+    render(<UploadQueueItemRow item={itemFixture({ status: "processing", jobId: "job_1" })} onRemove={vi.fn()} />);
+
+    expect(screen.queryByRole("link", { name: /view results/i })).not.toBeInTheDocument();
+  });
 });

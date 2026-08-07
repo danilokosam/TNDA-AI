@@ -1,6 +1,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createQueryWrapper } from "../../test/query-client-wrapper";
+import { getCachedFile } from "@/features/results/preview-cache";
 import type { JobDto, UploadResponse } from "@/types/api";
 
 vi.mock("@/lib/api/http", () => ({
@@ -103,5 +104,40 @@ describe("useUploadController", () => {
     expect(result.current.items[0]?.errorMessage).toBe("File too large.");
 
     await vi.waitFor(() => expect(result.current.items[1]?.jobId).toBe("job_2"));
+  });
+
+  it("caches the uploaded file for preview when a single upload succeeds", async () => {
+    const response: UploadResponse = { kind: "single", job: jobFixture({ jobId: "job_cache_1" }) };
+    vi.mocked(apiFetch).mockResolvedValue(response);
+    const uploadedFile = file("invoice.pdf");
+
+    const { result } = renderHook(() => useUploadController(), { wrapper: createQueryWrapper() });
+
+    act(() => {
+      result.current.addFiles([{ file: uploadedFile }]);
+    });
+
+    await vi.waitFor(() => expect(result.current.items[0]?.jobId).toBe("job_cache_1"));
+    expect(getCachedFile("job_cache_1")).toBe(uploadedFile);
+  });
+
+  it("does not cache anything for a .zip batch upload (no 1:1 file-to-job mapping)", async () => {
+    const response: UploadResponse = {
+      kind: "batch",
+      batch: { totalFiles: 2, accepted: 2, rejected: 0, files: [] },
+    };
+    vi.mocked(apiFetch).mockResolvedValue(response);
+
+    const { result } = renderHook(() => useUploadController(), { wrapper: createQueryWrapper() });
+
+    act(() => {
+      result.current.addFiles([{ file: file("batch.zip") }]);
+    });
+
+    await vi.waitFor(() => expect(result.current.items[0]?.status).toBe("batch-submitted"));
+    // Nothing meaningful to assert a negative on directly (no jobId exists
+    // for a batch item) - this test exists to document the deliberate
+    // gap, not to probe cache internals.
+    expect(result.current.items[0]?.jobId).toBeNull();
   });
 });
