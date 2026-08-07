@@ -1,13 +1,13 @@
 "use client";
 
-import { useId, useState } from "react";
+import { useCallback, useId, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { DocumentTypeSelect } from "@/components/upload/DocumentTypeSelect";
 import { Dropzone } from "@/components/upload/Dropzone";
 import { UploadQueueList } from "@/components/upload/UploadQueueList";
 import { useUploadController } from "@/features/upload/use-upload-controller";
 import { isFinished } from "@/features/upload/queue";
-import type { DocumentType } from "@/types/api";
+import type { DocumentType, JobDto } from "@/types/api";
 
 /**
  * The document-type selector applies to whatever gets dropped/selected
@@ -22,6 +22,21 @@ export function UploadWorkspace() {
   const documentTypeId = useId();
 
   const hasFinishedItems = queue.items.some((item) => isFinished(item.status));
+
+  // Stable across renders (depends only on queue.dispatch, itself stable —
+  // useReducer's dispatch never changes identity) — so PolledUploadQueueItem's
+  // effect only re-runs when polled data actually changes, not on every
+  // unrelated render. Was a fresh closure every render before; see
+  // PolledUploadQueueItem's doc comment for why that mattered. Deliberately
+  // depends on `queue.dispatch`, not the whole `queue` object — `queue` is a
+  // fresh reference every render (useUploadController/useUploadQueue return
+  // a new object literal each call), so depending on it would recreate this
+  // callback every render anyway, defeating the point.
+  const handleStatusUpdate = useCallback(
+    (id: string, job: JobDto) => queue.dispatch({ type: "job-status-updated", id, job }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [queue.dispatch],
+  );
 
   return (
     <div className="space-y-4">
@@ -41,11 +56,7 @@ export function UploadWorkspace() {
 
       <Dropzone onFilesSelected={(files) => queue.addFiles(files.map((file) => ({ file, documentType })))} />
 
-      <UploadQueueList
-        items={queue.items}
-        onStatusUpdate={(id, job) => queue.dispatch({ type: "job-status-updated", id, job })}
-        onRemove={queue.removeItem}
-      />
+      <UploadQueueList items={queue.items} onStatusUpdate={handleStatusUpdate} onRemove={queue.removeItem} />
     </div>
   );
 }

@@ -14,12 +14,10 @@ export function UploadQueueList({ items, onStatusUpdate, onRemove }: UploadQueue
   return (
     <div className="space-y-2">
       {items.map((item) => (
-        <PolledUploadQueueItem
-          key={item.id}
-          item={item}
-          onStatusUpdate={(job) => onStatusUpdate(item.id, job)}
-          onRemove={() => onRemove(item.id)}
-        />
+        // onStatusUpdate is passed straight through (not re-wrapped with a
+        // fresh per-item closure) — PolledUploadQueueItem curries item.id
+        // itself, so this stays whatever reference the caller gave us.
+        <PolledUploadQueueItem key={item.id} item={item} onStatusUpdate={onStatusUpdate} onRemove={() => onRemove(item.id)} />
       ))}
     </div>
   );

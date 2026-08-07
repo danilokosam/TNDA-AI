@@ -105,12 +105,28 @@ export function uploadQueueReducer(state: UploadQueueItem[], action: UploadQueue
         errorMessage: action.errorMessage,
       }));
 
-    case "job-status-updated":
+    case "job-status-updated": {
+      // Fired on every poll, including when nothing has changed (a job can
+      // legitimately sit at the same status across many polls). Returning
+      // the *same* state reference when it's genuinely a no-op is what lets
+      // useReducer bail out of re-rendering — building a new array/item
+      // unconditionally here (the previous behavior) meant a stable status
+      // still produced a new reference every time, which — combined with
+      // unstable callback identities elsewhere in the tree — turned
+      // ordinary redundant effect re-runs into a real "Maximum update depth
+      // exceeded" crash. See queue.test.ts's "no-op when nothing actually
+      // changed" tests.
+      const target = state.find((item) => item.id === action.id);
+      const isUnchanged =
+        !target || (target.status === action.job.status && target.errorMessage === action.job.errorMessage);
+      if (isUnchanged) return state;
+
       return updateItem(state, action.id, (item) => ({
         ...item,
         status: action.job.status,
         errorMessage: action.job.errorMessage,
       }));
+    }
 
     case "clear-finished":
       return state.filter((item) => !isFinished(item.status));

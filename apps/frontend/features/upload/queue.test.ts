@@ -124,9 +124,61 @@ describe("uploadQueueReducer", () => {
     const processing = { ...queued, status: "processing" as const, jobId: "job_99" };
     const job = jobFixture({ jobId: "job_99", status: "failed", errorMessage: "Azure timed out." });
 
-    const after = uploadQueueReducer([processing], { type: "job-status-updated", id: "a", job });
+    const state = [processing];
+    const after = uploadQueueReducer(state, { type: "job-status-updated", id: "a", job });
 
     expect(after[0]).toMatchObject({ status: "failed", errorMessage: "Azure timed out." });
+    // A real change must produce a new array reference — useReducer only
+    // bails out of re-rendering when the SAME reference comes back.
+    expect(after).not.toBe(state);
+  });
+
+  /**
+   * Regression for a real "Maximum update depth exceeded" crash (found via
+   * manual browser verification): a job sitting at the same status across
+   * many polls (the normal case — processing takes real time) was
+   * dispatching `job-status-updated` on every poll regardless of whether
+   * anything had changed, and this reducer unconditionally built a new
+   * array either way — `useReducer` has no way to bail out of a
+   * consequent re-render unless the *exact same* reference comes back.
+   * Combined with unstable callback identities elsewhere in the tree
+   * (features/upload/use-upload-controller.ts's fix), that unconditional
+   * new-array construction is what turned ordinary redundant effect
+   * re-runs into runaway re-rendering. This is the precise, deterministic
+   * property that actually has to hold — see UploadWorkspace.test.tsx's
+   * "polling regression" describe block for why an end-to-end repro of
+   * the exact crash wasn't reliable to assert on directly.
+   */
+  describe("job-status-updated: no-op when nothing actually changed", () => {
+    it("returns the exact same array reference when status and errorMessage are unchanged", () => {
+      const processing = { ...queued, status: "processing" as const, jobId: "job_99", errorMessage: null };
+      const state = [processing];
+      const job = jobFixture({ jobId: "job_99", status: "processing", errorMessage: null });
+
+      const after = uploadQueueReducer(state, { type: "job-status-updated", id: "a", job });
+
+      expect(after).toBe(state);
+    });
+
+    it("still returns a new reference when only errorMessage changes (status unchanged)", () => {
+      const failing = { ...queued, status: "failed" as const, jobId: "job_99", errorMessage: "First attempt." };
+      const state = [failing];
+      const job = jobFixture({ jobId: "job_99", status: "failed", errorMessage: "Different message now." });
+
+      const after = uploadQueueReducer(state, { type: "job-status-updated", id: "a", job });
+
+      expect(after).not.toBe(state);
+      expect(after[0]?.errorMessage).toBe("Different message now.");
+    });
+
+    it("returns the exact same array reference for an unknown id, not just an equal-valued copy", () => {
+      const state = [queued];
+      const job = jobFixture({ jobId: "job_99", status: "processing" });
+
+      const after = uploadQueueReducer(state, { type: "job-status-updated", id: "does-not-exist", job });
+
+      expect(after).toBe(state);
+    });
   });
 
   it("clear-finished: removes completed/failed/upload-failed/batch-submitted items, keeps active ones", () => {

@@ -43,7 +43,7 @@ describe("PolledUploadQueueItem", () => {
       wrapper: createQueryWrapper(),
     });
 
-    await vi.waitFor(() => expect(onStatusUpdate).toHaveBeenCalledWith(job));
+    await vi.waitFor(() => expect(onStatusUpdate).toHaveBeenCalledWith("a", job));
     expect(apiFetch).toHaveBeenCalledWith("/api/documents/job_1", expect.anything());
   });
 
