@@ -385,6 +385,14 @@ Confirmed decisions before starting: `member` role gets billing actions *disable
 
 **Manual Stripe Test Mode browser verification — performed by the user, all 5 flows PASS** (no browser-automation tool was available to the assistant, so the assistant prepared the environment — installed the Stripe CLI, verified the configured price IDs live, set up local webhook forwarding, and gave the user a precise checklist — and the user ran it directly): free-tier owner state, a real Stripe Checkout completion that correctly updated the subscription once the webhook landed, the real Stripe Customer Portal round-trip, a cancelled checkout returning cleanly with no state change, and member-role UI gating confirmed backed by real `403`s from the backend when bypassed via direct API calls. Full details in `apps/frontend/PROGRESS.md` §18. No deviations from the approved plan. **Phase 3 is fully closed**, pending only the user's review/commit decision.
 
+### 3.26 `/settings` — read-only info page (2026-08-08)
+
+Scoped before implementation: a survey confirmed every existing auth/organization endpoint is `GET`-only, so nothing is editable today — self password/email change, org rename, and team/member management all have zero backend support. The user chose the smallest workable scope: strictly read-only, no new backend/BFF work, no new abstractions.
+
+`app/(dashboard)/settings/page.tsx` (detailed in `apps/frontend/PROGRESS.md` §19) replaced its `EmptyState` stub with an async Server Component fetching `getCurrentUser()`/`getOrganizationOverview()` directly, matching `DashboardPage`'s own pattern — Account (email, role) and Organization (name, created date) sections, built inline with existing `Card` primitives, no new component. Deliberately excludes usage meters and plan/subscription info (already shown elsewhere).
+
+**Verification**: full frontend `typecheck`/`lint`/`test` clean — 340 tests (unchanged, no new tests needed — matches the existing no-test convention for thin Server Component pages calling untested `services/*` passthroughs). Diff reviewed: exactly one file changed. Manual browser verification for both `owner` and `member` roles (the latter via the same Supabase-SQL reassignment technique used for Billing Phase 3, since no invite flow exists) — both correctly show their own data, no console errors. No deviations. Left uncommitted, pending review.
+
 ---
 
 ## 4. Architectural Decisions (what, and why)
