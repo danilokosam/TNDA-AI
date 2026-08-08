@@ -6,10 +6,13 @@ import { formatDate, formatPercent } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { DocumentJobStatus, JobDto } from "@/types/api";
 
-const STATUS_DISPLAY: Record<DocumentJobStatus, { label: string; icon: LucideIcon; spin?: boolean; destructive?: boolean }> = {
+const STATUS_DISPLAY: Record<
+  DocumentJobStatus,
+  { label: string; icon: LucideIcon; spin?: boolean; destructive?: boolean; success?: boolean }
+> = {
   pending: { label: "Pending", icon: Clock },
   processing: { label: "Processing…", icon: LoaderCircle, spin: true },
-  completed: { label: "Completed", icon: CircleCheck },
+  completed: { label: "Completed", icon: CircleCheck, success: true },
   failed: { label: "Failed", icon: CircleX, destructive: true },
   rejected_quota: { label: "Quota exceeded", icon: TriangleAlert, destructive: true },
 };
@@ -58,7 +61,7 @@ export function DocumentsTable({ jobs }: DocumentsTableProps) {
                 <div
                   className={cn(
                     "flex items-center gap-1.5",
-                    display.destructive ? "text-destructive" : "text-muted-foreground",
+                    display.destructive ? "text-destructive" : display.success ? "text-success" : "text-muted-foreground",
                   )}
                 >
                   <StatusIcon className={cn("size-3.5", display.spin && "animate-spin")} />
@@ -69,7 +72,11 @@ export function DocumentsTable({ jobs }: DocumentsTableProps) {
                 <div
                   className={cn(
                     "flex items-center gap-1.5",
-                    reviewDisplay.destructive ? "text-destructive" : "text-muted-foreground",
+                    reviewDisplay.destructive
+                      ? "text-destructive"
+                      : reviewDisplay.success
+                        ? "text-success"
+                        : "text-muted-foreground",
                   )}
                 >
                   <ReviewIcon className="size-3.5" />

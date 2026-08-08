@@ -36,10 +36,10 @@ interface DocumentResultsViewProps {
 /** Exported for `DocumentsTable` (Stage 5's History table) to reuse for its own review-status column — same cross-file display-map convention as `DocumentTypeSelect.tsx#DOCUMENT_TYPE_LABELS`. */
 export const REVIEW_STATUS_DISPLAY: Record<
   DocumentReviewStatus,
-  { label: string; icon: LucideIcon; destructive?: boolean }
+  { label: string; icon: LucideIcon; destructive?: boolean; success?: boolean }
 > = {
   unreviewed: { label: "Unreviewed", icon: Clock },
-  confirmed: { label: "Confirmed", icon: CircleCheck },
+  confirmed: { label: "Confirmed", icon: CircleCheck, success: true },
   rejected: { label: "Rejected", icon: CircleX },
 };
 
@@ -170,7 +170,7 @@ export function DocumentResultsView({ jobId }: DocumentResultsViewProps) {
         <div
           className={cn(
             "flex items-center gap-1.5 text-sm",
-            reviewDisplay.destructive ? "text-destructive" : "text-muted-foreground",
+            reviewDisplay.destructive ? "text-destructive" : reviewDisplay.success ? "text-success" : "text-muted-foreground",
           )}
         >
           <ReviewIcon className="size-3.5" />

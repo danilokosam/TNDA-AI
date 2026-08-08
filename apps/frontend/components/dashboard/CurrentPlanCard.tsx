@@ -15,8 +15,8 @@ export const STATUS_LABELS: Record<SubscriptionStatus, string> = {
   incomplete: "Incomplete",
 };
 
-export const STATUS_VARIANTS: Record<SubscriptionStatus, "default" | "secondary" | "outline" | "destructive"> = {
-  active: "default",
+export const STATUS_VARIANTS: Record<SubscriptionStatus, "success" | "secondary" | "outline" | "destructive"> = {
+  active: "success",
   trialing: "secondary",
   past_due: "outline",
   incomplete: "outline",

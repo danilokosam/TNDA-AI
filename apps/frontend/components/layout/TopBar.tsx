@@ -1,5 +1,6 @@
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Separator } from "@/components/ui/separator";
+import { ThemeToggle } from "@/components/layout/ThemeToggle";
 
 export function TopBar({ children }: { children?: React.ReactNode }) {
   return (
@@ -7,6 +8,7 @@ export function TopBar({ children }: { children?: React.ReactNode }) {
       <SidebarTrigger className="-ml-1" />
       <Separator orientation="vertical" className="mr-2 h-4" />
       <div className="flex flex-1 items-center">{children}</div>
+      <ThemeToggle />
     </header>
   );
 }

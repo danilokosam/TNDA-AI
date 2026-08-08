@@ -393,6 +393,16 @@ Scoped before implementation: a survey confirmed every existing auth/organizatio
 
 **Verification**: full frontend `typecheck`/`lint`/`test` clean — 340 tests (unchanged, no new tests needed — matches the existing no-test convention for thin Server Component pages calling untested `services/*` passthroughs). Diff reviewed: exactly one file changed. Manual browser verification for both `owner` and `member` roles (the latter via the same Supabase-SQL reassignment technique used for Billing Phase 3, since no invite flow exists) — both correctly show their own data, no console errors. No deviations. Left uncommitted, pending review.
 
+### 3.27 Light/dark theming — palette, typography, and a Light/Dark/System switcher (2026-08-08)
+
+Design-only (detailed in `apps/frontend/PROGRESS.md` §20): no business logic, API, schema, auth, billing, or document-processing changes anywhere in the diff. An inspection pass first confirmed every shared UI primitive and feature component was already 100% token-driven (zero hardcoded colors outside `globals.css`) and that `next-themes` was already a dependency with `<html suppressHydrationWarning>` and a complete-but-unused `.dark` CSS block already scaffolded — extended that existing mechanism rather than adding a competing one, per instruction.
+
+New palette in `app/globals.css`: light theme white/off-white surfaces with a restrained blue primary; dark theme near-black/dark-gray surfaces with a muted (non-neon) green primary used as an accent, not a fill. Every text/background pairing verified against WCAG AA via a standalone OKLCH-contrast script before any browser check — all 26 pairs passed. A new `--success`/`--success-foreground` token pair closes a real, previously-documented gap (`UsageMeter.tsx`'s own comment noted no such token existed) and is applied in exactly three places — completed documents, confirmed reviews, active subscriptions — all still icon-reinforced, never color-only.
+
+Theme switching: a `<ThemeProvider>` added to the root layout, and a new `ThemeToggle` component (TDD, 6 tests) in `TopBar.tsx`'s previously-empty right side, using the dropdown-menu primitives' already-present-but-unused `RadioGroup`/`RadioItem` parts. Persistence via `next-themes`' own `localStorage` handling.
+
+**Verification**: full frontend `typecheck`/`lint`/`test` clean — 346 tests (up from 340). 9 files changed, all frontend, no backend/API/schema/auth files anywhere in the diff. Manual browser verification across Dashboard/Billing/Settings in Light, Dark, and System (System's resolution confirmed against a real `matchMedia` query, not assumed) — including the new `success` green correctly reading as distinct from the `primary` green in dark mode, and a disabled button remaining distinguishable via opacity + text, not color alone. Persistence confirmed via `localStorage` after a full reload. Zero console errors or hydration warnings. No deviations from the approved plan. Left uncommitted, pending review.
+
 ---
 
 ## 4. Architectural Decisions (what, and why)
