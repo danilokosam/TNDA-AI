@@ -325,6 +325,16 @@ bun run dev
 
 # — or run it once without watching —
 bun run start
+
+# 5. In a SEPARATE terminal, run the background worker — required for any
+#    uploaded document to actually get processed. `POST /documents` always
+#    returns immediately with the job left `pending`; nothing advances it
+#    past `pending` until this process claims and submits it to Azure. It
+#    is NOT started by `bun run dev` and is not part of any other script —
+#    without it, uploads will sit at "Waiting to process…" indefinitely
+#    (this is expected, not a bug — see PROGRESS.md §23 for the full
+#    investigation behind this note).
+bun run worker:dev
 ```
 
 ### Available scripts
@@ -333,6 +343,8 @@ bun run start
 |---|---|
 | `bun run dev` | Starts the server with `--watch` (auto-restarts on file change) |
 | `bun run start` | Starts the server once, no watching (production-style run) |
+| `bun run worker:dev` | Starts the background worker with `--watch` — run this **in a separate terminal**; it's not started by `bun run dev` (see above) |
+| `bun run worker:start` | Starts the background worker once, no watching |
 | `bun run typecheck` | Runs `tsc --noEmit` — strict mode, zero `as` casts enforced by convention |
 | `bun run lint` | Runs ESLint over the whole project |
 | `bun run test` | Runs the full Vitest suite once (`vitest run`) — no real credentials needed |

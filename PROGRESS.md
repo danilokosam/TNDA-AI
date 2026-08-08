@@ -403,6 +403,16 @@ Theme switching: a `<ThemeProvider>` added to the root layout, and a new `ThemeT
 
 **Verification**: full frontend `typecheck`/`lint`/`test` clean — 346 tests (up from 340). 9 files changed, all frontend, no backend/API/schema/auth files anywhere in the diff. Manual browser verification across Dashboard/Billing/Settings in Light, Dark, and System (System's resolution confirmed against a real `matchMedia` query, not assumed) — including the new `success` green correctly reading as distinct from the `primary` green in dark mode, and a disabled button remaining distinguishable via opacity + text, not color alone. Persistence confirmed via `localStorage` after a full reload. Zero console errors or hydration warnings. No deviations from the approved plan. Left uncommitted, pending review.
 
+### 3.28 Investigation: a document stuck at `pending` in local development — not a bug (2026-08-08)
+
+Detailed in `apps/backend/PROGRESS.md` §23. A reported regression ("upload succeeds, then the frontend polls indefinitely and `/documents` never leaves `Waiting to process…`") was investigated per systematic-debugging discipline — root cause before any fix. **Zero code changes resulted.**
+
+Evidence, not assumption: no worker process was running anywhere in the dev environment (`ps`/`lsof`); the specific job's row was a fully healthy, never-claimed, fully-eligible `pending` row (`claimed_by: null`, `lease_epoch: 0`, correctly-persisted `storage_path`); its event log held only `job_created`; the claim RPC's `WHERE` clause has no organization/role condition at all, ruling out the reporting `member`-role account as a factor; the frontend's own `poll-schedule.ts` and its existing tests already explicitly assert the exact "keep polling while pending, stop at terminal" behavior observed. `git log -S` confirmed the worker has never been part of `bun run dev`'s fan-out — a deliberate original Wave 3 Phase 2 decision (ADR 0013), not a regression.
+
+**Root cause**: the worker was never started in this dev session — exactly the already-documented "someone has to run `bun run worker:start` separately" consequence, working as designed. Verified live, not just asserted: with the reported job actively polling in a real browser, starting the worker for real claimed and completed that exact job within seconds, extracted fields rendered, and network inspection over a window longer than the poll schedule's own max interval confirmed polling stopped the instant `completed` was reached. This also closes the backend's own previously-open "get a human to confirm the upload flow in a real browser" item.
+
+**Tests**: none added — every implicated behavior already has direct, passing coverage; nothing to protect that isn't already protected. **Verification**: full monorepo `typecheck`/`lint`/`test` clean (backend 347/347, frontend 346/346, both unchanged). `git status` empty throughout. **Left open, pending a decision, not silently fixed**: how (or whether) to make the separate-worker requirement more discoverable for local development — options range from a documentation-only note up to wiring the worker into the dev fan-out, the latter reversing a deliberate prior decision and requiring explicit sign-off first.
+
 ---
 
 ## 4. Architectural Decisions (what, and why)

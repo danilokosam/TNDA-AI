@@ -36,6 +36,14 @@ pnpm --filter @tnda-ai/frontend dev
 
 Each app needs its own `.env` — see `apps/backend/.env.example` and `apps/frontend/.env.example`.
 
+**Uploaded documents need the background worker running too.** `pnpm dev` starts the API and frontend only — it does **not** start the worker that actually processes uploads. Without it, every upload sits at `pending`/"Waiting to process…" forever (this is expected, not a bug). In a separate terminal:
+
+```bash
+pnpm --filter @tnda-ai/backend worker:dev
+```
+
+See `apps/backend/README.md` for the full script list.
+
 ## Available scripts
 
 Run from the root, fanned out across the workspace via [Turborepo](https://turborepo.dev):
