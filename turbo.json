@@ -9,6 +9,10 @@
       "cache": false,
       "persistent": true
     },
+    "worker:start": {
+      "cache": false,
+      "persistent": true
+    },
     "typecheck": {
       "outputs": []
     },
