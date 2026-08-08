@@ -176,3 +176,52 @@
     scroll-behavior: auto !important;
   }
 }
+
+/* Route-navigation crossfade (`components/layout/RouteTransition.tsx`). The
+   ::view-transition-* pseudo-elements live outside the normal DOM, so the
+   `*` reduced-motion rule above doesn't reach them — they need their own
+   override, pure CSS, no JS branch on matchMedia. */
+::view-transition {
+  pointer-events: none;
+}
+::view-transition-old(.route-fade) {
+  animation: 120ms ease-out both route-fade-out;
+}
+::view-transition-new(.route-fade) {
+  animation: 160ms ease-in both route-fade-in;
+}
+@keyframes route-fade-out {
+  to { opacity: 0; }
+}
+@keyframes route-fade-in {
+  from { opacity: 0; }
+}
+
+/* The native View Transition API always diffs the whole viewport by
+   default, not just the `.route-fade` boundary — so without this, the
+   sidebar's active-route highlight (`AppSidebar.tsx`, driven by
+   `usePathname()`) briefly double-exposes the old and new highlighted item
+   during every navigation, confirmed live (slowed down) before adding this.
+   Anchoring it out of the transition — its own `view-transition-name`, no
+   animation, old snapshot hidden immediately — makes it swap instantly
+   instead, so only the actual page content crossfades. */
+[data-slot="sidebar"] {
+  view-transition-name: app-sidebar;
+}
+::view-transition-group(app-sidebar) {
+  animation: none;
+}
+::view-transition-old(app-sidebar) {
+  display: none;
+}
+::view-transition-new(app-sidebar) {
+  animation: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0s !important;
+  }
+}

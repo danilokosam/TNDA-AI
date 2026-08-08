@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/layout/AppSidebar";
 import { TopBar } from "@/components/layout/TopBar";
+import { RouteTransition } from "@/components/layout/RouteTransition";
 import { getCurrentUser } from "@/services/auth.service";
 
 /**
@@ -19,7 +20,9 @@ export default async function DashboardLayout({ children }: { children: ReactNod
       <AppSidebar user={user} />
       <SidebarInset>
         <TopBar />
-        <div className="flex flex-1 flex-col gap-4 p-4 md:p-6">{children}</div>
+        <div className="flex flex-1 flex-col gap-4 p-4 md:p-6">
+          <RouteTransition>{children}</RouteTransition>
+        </div>
       </SidebarInset>
     </SidebarProvider>
   );
