@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppError, NotFoundError } from "@/utils/errors";
 
 vi.mock("@/config/supabase", () => ({
-  supabaseAdmin: { from: vi.fn() },
+  supabaseAdmin: { from: vi.fn(), rpc: vi.fn() },
 }));
 
 const { supabaseAdmin } = await import("@/config/supabase");
@@ -73,6 +73,11 @@ function jobRow(overrides: Partial<Record<string, unknown>> = {}) {
     deleted_at: null,
     retry_count: 0,
     is_retryable: null,
+    claimed_by: null,
+    claimed_at: null,
+    lease_expires_at: null,
+    lease_epoch: 0,
+    next_attempt_at: null,
     created_at: "2026-01-15T00:00:00.000Z",
     updated_at: "2026-01-15T00:00:05.000Z",
     ...overrides,
@@ -368,5 +373,44 @@ describe("listDocumentJobEvents", () => {
     vi.mocked(supabaseAdmin.from).mockReturnValue(chain);
 
     await expect(documentsRepository.listDocumentJobEvents("job_1")).rejects.toThrow(AppError);
+  });
+});
+
+describe("claimOrRenewDocumentJob", () => {
+  it("calls the claim_or_renew_document_job RPC with the given worker id, lease, and max-retries", async () => {
+    vi.mocked(supabaseAdmin.rpc).mockResolvedValue({ data: jobRow({ claimed_by: "worker_1" }), error: null } as any);
+
+    const result = await documentsRepository.claimOrRenewDocumentJob({
+      workerId: "worker_1",
+      leaseSeconds: 180,
+      maxRetries: 3,
+    });
+
+    expect(supabaseAdmin.rpc).toHaveBeenCalledWith("claim_or_renew_document_job", {
+      p_worker_id: "worker_1",
+      p_lease_seconds: 180,
+      p_max_retries: 3,
+    });
+    expect(result).toEqual(jobRow({ claimed_by: "worker_1" }));
+  });
+
+  it("returns null when nothing was available to claim (not an error)", async () => {
+    vi.mocked(supabaseAdmin.rpc).mockResolvedValue({ data: null, error: null } as any);
+
+    const result = await documentsRepository.claimOrRenewDocumentJob({
+      workerId: "worker_1",
+      leaseSeconds: 180,
+      maxRetries: 3,
+    });
+
+    expect(result).toBeNull();
+  });
+
+  it("throws AppError when Supabase returns an error", async () => {
+    vi.mocked(supabaseAdmin.rpc).mockResolvedValue({ data: null, error: { message: "function not found" } } as any);
+
+    await expect(
+      documentsRepository.claimOrRenewDocumentJob({ workerId: "worker_1", leaseSeconds: 180, maxRetries: 3 }),
+    ).rejects.toThrow(AppError);
   });
 });

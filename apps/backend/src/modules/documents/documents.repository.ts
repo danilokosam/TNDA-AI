@@ -280,3 +280,46 @@ export async function listDocumentJobEvents(jobId: string): Promise<DocumentJobE
 
   return data ?? [];
 }
+
+export interface ClaimDocumentJobParams {
+  /**
+   * Identifies one claim SLOT, not a worker process — the RPC's
+   * renew-vs-claim-new decision is purely "does a row already have
+   * claimed_by = workerId." A worker holding more than one job at once
+   * (WORKER_CONCURRENCY > 1) must call this with a distinct id per
+   * concurrently-held job, never one shared id for the whole process —
+   * see the migration's own column comment.
+   */
+  workerId: string;
+  leaseSeconds: number;
+  maxRetries: number;
+}
+
+/**
+ * Wraps the `claim_or_renew_document_job` RPC (Wave 3 Phase 1) — atomically
+ * claims the next available job, or renews the caller's existing claim if
+ * it already holds one. Returns `null` when nothing is available to claim
+ * right now, which is an entirely normal, expected outcome (an empty
+ * queue), not an error. No document_job_id/organization scoping here by
+ * design: a worker claims across every organization, the same way every
+ * other cross-tenant operational concern in this backend (migrations,
+ * aggregation functions) already does — the RPC itself is grant-restricted
+ * to the service-role caller only, never exposed to `authenticated` (see
+ * the migration's own comment and docs/adr/0012).
+ */
+export async function claimOrRenewDocumentJob(
+  params: ClaimDocumentJobParams,
+): Promise<DocumentJobRow | null> {
+  const { data, error } = await supabaseAdmin.rpc("claim_or_renew_document_job", {
+    p_worker_id: params.workerId,
+    p_lease_seconds: params.leaseSeconds,
+    p_max_retries: params.maxRetries,
+  });
+
+  if (error) {
+    console.error("[documents.repository] claimOrRenewDocumentJob failed", { params, error });
+    throw new AppError(500, "INTERNAL_ERROR", error.message);
+  }
+
+  return data ?? null;
+}

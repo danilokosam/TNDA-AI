@@ -179,6 +179,11 @@ export interface Database {
           deleted_at: string | null;
           retry_count: number;
           is_retryable: boolean | null;
+          claimed_by: string | null;
+          claimed_at: string | null;
+          lease_expires_at: string | null;
+          lease_epoch: number;
+          next_attempt_at: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -202,6 +207,11 @@ export interface Database {
           deleted_at?: string | null;
           retry_count?: number;
           is_retryable?: boolean | null;
+          claimed_by?: string | null;
+          claimed_at?: string | null;
+          lease_expires_at?: string | null;
+          lease_epoch?: number;
+          next_attempt_at?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -225,6 +235,11 @@ export interface Database {
           deleted_at?: string | null;
           retry_count?: number;
           is_retryable?: boolean | null;
+          claimed_by?: string | null;
+          claimed_at?: string | null;
+          lease_expires_at?: string | null;
+          lease_epoch?: number;
+          next_attempt_at?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -358,6 +373,10 @@ export interface Database {
       get_organization_daily_job_counts: {
         Args: { p_organization_id: string; p_since: string };
         Returns: { day: string; job_count: number }[];
+      };
+      claim_or_renew_document_job: {
+        Args: { p_worker_id: string; p_lease_seconds: number; p_max_retries: number };
+        Returns: Database["public"]["Tables"]["document_jobs"]["Row"] | null;
       };
     };
     Enums: {
