@@ -4,7 +4,13 @@ import { extractZipEntries } from "@/utils/zip";
 import { computeAverageConfidence } from "@/utils/confidence";
 import { AppError, AzureServiceError, ConflictError, ForbiddenError, PayloadTooLargeError, QuotaExceededError, ValidationError } from "@/utils/errors";
 import { getAnalysisOperationStatus } from "@/services/azure-document-intelligence.service";
-import { buildStoragePath, createSignedPreviewUrl, deleteDocumentFile, uploadDocumentFile } from "@/services/storage.service";
+import {
+  buildStoragePath,
+  createSignedPreviewUrl,
+  deleteDocumentFile,
+  downloadDocumentFile,
+  uploadDocumentFile,
+} from "@/services/storage.service";
 import { getProcessingStrategy, type DocumentType } from "@/modules/documents/documents.strategy";
 import { getEffectivePlan } from "@/modules/organization/organization.service";
 import { getDocumentsSubmittedSince, getMonthlyPagesUsed, type PlanRow } from "@/modules/organization/organization.repository";
@@ -18,6 +24,7 @@ import {
   listDocumentJobsForOrganization,
   listFieldCorrections,
   updateDocumentJob,
+  updateDocumentJobIfEpochMatches,
   type DocumentJobRow,
   type FieldCorrectionInsert,
   type FieldCorrectionRow,
@@ -78,22 +85,89 @@ async function recordLifecycleEvent(
 
 /**
  * Classifies a submission-time failure as retryable (transient — Azure
- * unreachable, timed out, or returned a 5xx) or not (Azure explicitly
- * rejected the request with a 4xx — retrying the identical request would
- * fail the same way). Local validation failures (corrupt file, wrong
- * format, quota) never reach this point: inspectDocumentFile and
- * assertFileMeetsPlanConstraints already run, and are handled, before a
- * job is ever submitted to Azure. No automatic retry acts on this
- * classification yet (Wave 3) — see the ADR referenced above.
+ * unreachable, timed out, returned a 5xx, or rate-limited us with a 429)
+ * or not (Azure explicitly rejected the request with some other 4xx —
+ * retrying the identical request would fail the same way). Local
+ * validation failures (corrupt file, wrong format, quota) never reach
+ * this point: inspectDocumentFile and assertFileMeetsPlanConstraints
+ * already run, and are handled, before a job is ever submitted to Azure.
+ *
+ * 429 is deliberately carved out of the blanket 4xx-is-terminal rule
+ * (Wave 3 Phase 2, revisiting the classification Wave 2 shipped with) —
+ * by the time this is even reached, beginDocumentAnalysis's own
+ * fetchWithRetry has already exhausted its intra-request 429 retries, so
+ * a 429 that still surfaces here reflects sustained rate-limiting, the
+ * textbook retryable case, not "Azure rejected this request." See
+ * docs/adr/0013-wave-3-phase-2-processing-worker.md.
  */
 function isRetryableSubmissionFailure(error: unknown): boolean {
   if (error instanceof AzureServiceError) {
     const status = error.details?.status;
-    if (typeof status === "number" && status >= 400 && status < 500) {
-      return false;
+    if (typeof status === "number") {
+      if (status === 429) return true;
+      if (status >= 400 && status < 500) return false;
     }
   }
   return true;
+}
+
+/**
+ * Reads back the Retry-After value (in seconds) that beginDocumentAnalysis
+ * captured on a 429, if any. `undefined` for every other failure shape —
+ * callers fall back to the exponential+jitter formula in that case.
+ */
+function extractRetryAfterSeconds(error: unknown): number | undefined {
+  if (error instanceof AzureServiceError) {
+    const value = error.details?.retryAfterSeconds;
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+// Wave 3 Phase 2 approved defaults (docs/adr/0013). Policy constants, not
+// deployment knobs — the same category of value as this module's sibling
+// azure-document-intelligence.service.ts's own MAX_RETRIES/BASE_DELAY_MS,
+// which are plain constants for the identical reason.
+const RETRY_BASE_DELAY_MS = 30_000;
+const RETRY_BACKOFF_MULTIPLIER = 2;
+const RETRY_JITTER_MAX_MS = 10_000;
+const RETRY_MAX_DELAY_MS = 600_000;
+
+/**
+ * How long until a retryable failure's next attempt becomes eligible
+ * (feeds `document_jobs.next_attempt_at`). Azure's own `Retry-After`, when
+ * available, is used verbatim instead of the exponential formula — Azure
+ * knows its own rate-limit window better than a generic backoff guess
+ * does. `retryCount` is the job's *current* value (before this failure is
+ * persisted) — attempt 1's failure uses retryCount=0 (30s base), attempt
+ * 2's uses retryCount=1 (60s), and so on, doubling per Wave 2's approved
+ * multiplier. Both branches are capped at the same maximum.
+ */
+export function computeNextAttemptDelayMs(retryCount: number, retryAfterSeconds?: number): number {
+  if (typeof retryAfterSeconds === "number") {
+    return Math.min(retryAfterSeconds * 1000, RETRY_MAX_DELAY_MS);
+  }
+
+  const exponential = RETRY_BASE_DELAY_MS * RETRY_BACKOFF_MULTIPLIER ** retryCount;
+  const jitter = Math.random() * RETRY_JITTER_MAX_MS;
+  return Math.min(exponential + jitter, RETRY_MAX_DELAY_MS);
+}
+
+/**
+ * Whether a job has used up its entire retry budget. Deliberately mirrors
+ * the exact condition the claim RPC's own eligibility clause enforces
+ * (`retry_count < p_max_retries`) — `retryCount` here must be the value
+ * already on the claimed row (before this failure), never a value this
+ * function increments itself; the RPC is the only place retry_count is
+ * ever incremented, at the *next* claim, not at failure time. Getting
+ * this out of sync with the RPC's own check would either let a job be
+ * marked exhausted one attempt too early, or leave `is_retryable: true`
+ * on a row the RPC will in fact never reclaim again.
+ */
+export function isRetryExhausted(retryCount: number, maxRetries: number): boolean {
+  return retryCount >= maxRetries;
 }
 
 /** Hard, per-file constraints that never depend on how much of the plan's quota is already used. */
@@ -165,42 +239,173 @@ async function persistOriginalFile(
 }
 
 /**
- * Submits a persisted job's bytes for analysis via whichever processing
- * strategy the requested `documentType` resolves to, and advances its
- * status. On failure the job is marked `failed` (so it's visible via the
- * polling endpoint) and the error is re-thrown for the caller to react to.
+ * Wave 3 Phase 2 — the worker's entry point for a freshly claimed (or
+ * retry-reclaimed) `pending` job. Precondition, enforced by the caller,
+ * not re-checked here: `job.status === "pending"`. Every write is
+ * epoch-gated against `job.lease_epoch` — the value captured at claim
+ * time — so a worker that has silently lost its lease to a reclaim
+ * writes nothing and returns `null` instead of corrupting the new
+ * holder's state (docs/adr/0013). A `null` return means exactly that:
+ * the caller must stop touching this job entirely, not retry the write
+ * or treat it as a normal failure.
  *
- * This function itself has no idea which model or provider actually
- * handles the document — that's entirely the resolved strategy's
- * decision (see `documents.strategy.ts`).
+ * This is now the ONLY path that submits to Azure — Step 7 removed the
+ * upload request's old synchronous submission call entirely, so this
+ * function runs in a separate process from the original upload request
+ * and has no in-memory bytes to work with — it re-downloads the original
+ * file from Storage (Option 1 of the two considered; see the ADR for why
+ * raw bytes were kept over switching to Azure's `urlSource` submission
+ * style).
  */
-async function submitForAnalysis(
-  jobId: string,
-  bytes: Uint8Array,
-  mimeType: SupportedDocumentMimeType,
-  documentType: DocumentType,
-): Promise<DocumentJobRow> {
+export async function submitClaimedJobForProcessing(
+  job: DocumentJobRow,
+  workerId: string,
+  maxRetries: number,
+): Promise<DocumentJobRow | null> {
+  if (job.retry_count > 0) {
+    await recordLifecycleEvent(job.id, "processing_retried", null, "failed", "pending", {
+      retryNumber: job.retry_count,
+    });
+  }
+
+  // No storage_path means there is no bytes source this or any future
+  // attempt could ever use — not because Storage upload is fatal at
+  // upload time (it stays deliberately non-fatal there, unchanged), but
+  // because nothing repopulates a file that was never persisted, or was
+  // independently removed while this job sat in the claim queue. Always
+  // terminal, never retryable: a later attempt would fail identically.
+  if (!job.storage_path) {
+    const message = "The original file was not persisted to storage and cannot be submitted for processing.";
+    const updated = await updateDocumentJobIfEpochMatches(job.id, job.lease_epoch, {
+      status: "failed",
+      error_message: message,
+      is_retryable: false,
+      next_attempt_at: null,
+      claimed_by: null,
+      claimed_at: null,
+      lease_expires_at: null,
+    });
+    if (!updated) return null;
+
+    await recordLifecycleEvent(job.id, "processing_failed", null, "pending", "failed", {
+      errorMessage: message,
+      isRetryable: false,
+      reason: "missing_storage_file",
+    });
+    return updated;
+  }
+
   try {
-    const strategy = getProcessingStrategy(documentType);
-    const { operationReference } = await strategy.submit(bytes, mimeType);
-    const job = await updateDocumentJob(jobId, { status: "processing", azure_operation_id: operationReference });
-    await recordLifecycleEvent(jobId, "processing_started", null, "pending", "processing");
-    return job;
+    // A storage-download failure is not an AzureServiceError, so
+    // isRetryableSubmissionFailure's default branch already treats it as
+    // retryable below — a transient Storage hiccup is worth another
+    // attempt later, unlike a permanently-missing file (handled above).
+    const bytes = await downloadDocumentFile(job.storage_path);
+    const inspected = await inspectDocumentFile(job.file_name, bytes);
+
+    const strategy = getProcessingStrategy(job.document_type);
+    const { operationReference } = await strategy.submit(bytes, inspected.mimeType);
+
+    const updated = await updateDocumentJobIfEpochMatches(job.id, job.lease_epoch, {
+      status: "processing",
+      azure_operation_id: operationReference,
+    });
+    if (!updated) return null;
+
+    await recordLifecycleEvent(job.id, "processing_started", null, "pending", "processing", {
+      retryNumber: job.retry_count,
+    });
+    return updated;
   } catch (error) {
-    console.error("[documents.service] submitForAnalysis failed", { jobId, documentType, error });
-    const isRetryable = isRetryableSubmissionFailure(error);
+    console.error("[documents.service] submitClaimedJobForProcessing failed", { jobId: job.id, workerId, error });
+
+    // Exhaustion is computed from the retry_count already on this claimed
+    // row (before this failure — the RPC only increments it at the next
+    // claim), never from a value this function derives itself. This must
+    // stay exactly in sync with the claim RPC's own `retry_count <
+    // p_max_retries` eligibility check, or a job could be marked
+    // retryable here while the RPC would never actually reclaim it (or
+    // vice versa) — see docs/adr/0013's consistency-review note.
+    const exhausted = isRetryExhausted(job.retry_count, maxRetries);
+    const isRetryable = exhausted ? false : isRetryableSubmissionFailure(error);
     const failureMessage = errorMessage(error, "Failed to submit document for analysis.");
-    await updateDocumentJob(jobId, {
+    const nextAttemptAt = isRetryable
+      ? new Date(Date.now() + computeNextAttemptDelayMs(job.retry_count, extractRetryAfterSeconds(error))).toISOString()
+      : null;
+
+    const updated = await updateDocumentJobIfEpochMatches(job.id, job.lease_epoch, {
       status: "failed",
       error_message: failureMessage,
       is_retryable: isRetryable,
+      next_attempt_at: nextAttemptAt,
+      claimed_by: null,
+      claimed_at: null,
+      lease_expires_at: null,
     });
-    await recordLifecycleEvent(jobId, "processing_failed", null, "pending", "failed", {
+    if (!updated) return null;
+
+    await recordLifecycleEvent(job.id, "processing_failed", null, "pending", "failed", {
       errorMessage: failureMessage,
       isRetryable,
+      ...(exhausted ? { exhausted: true } : {}),
     });
-    throw error;
+    return updated;
   }
+}
+
+/**
+ * Wave 3 Phase 2 — one poll attempt against a claimed, already-submitted
+ * (`processing`) job, called repeatedly by the worker's own loop while it
+ * holds the claim. Deliberately mirrors `getJobStatus`'s existing
+ * one-shot-check shape exactly (a non-terminal Azure status writes
+ * nothing and returns the job unchanged) — the worker plays the role a
+ * polling HTTP client used to play, not a new mechanism. Every write is
+ * epoch-gated and releases the claim, for the same reasons documented on
+ * `submitClaimedJobForProcessing` above; a `null` return means the same
+ * thing here too.
+ */
+export async function checkClaimedJobProgress(job: DocumentJobRow): Promise<DocumentJobRow | null> {
+  const azureStatus = await getAnalysisOperationStatus(job.azure_operation_id!);
+
+  if (azureStatus.status === "succeeded") {
+    const resultJson = azureStatus.analyzeResult ?? null;
+    const updated = await updateDocumentJobIfEpochMatches(job.id, job.lease_epoch, {
+      status: "completed",
+      result_json: resultJson,
+      average_confidence: computeAverageConfidence(resultJson),
+      claimed_by: null,
+      claimed_at: null,
+      lease_expires_at: null,
+    });
+    if (!updated) return null;
+
+    await recordLifecycleEvent(job.id, "processing_completed", null, "processing", "completed");
+    return updated;
+  }
+
+  if (azureStatus.status === "failed") {
+    const failureMessage = azureStatus.error?.message ?? "Azure Document Intelligence analysis failed.";
+    // Azure fully processed this request and reported the failure itself
+    // — a content-level failure, always terminal, exactly the same rule
+    // getJobStatus already applies today.
+    const updated = await updateDocumentJobIfEpochMatches(job.id, job.lease_epoch, {
+      status: "failed",
+      error_message: failureMessage,
+      is_retryable: false,
+      claimed_by: null,
+      claimed_at: null,
+      lease_expires_at: null,
+    });
+    if (!updated) return null;
+
+    await recordLifecycleEvent(job.id, "processing_failed", null, "processing", "failed", {
+      errorMessage: failureMessage,
+      isRetryable: false,
+    });
+    return updated;
+  }
+
+  return job;
 }
 
 export async function processSingleDocument(
@@ -253,7 +458,10 @@ export async function processSingleDocument(
 
   await persistOriginalFile(job.id, organizationId, fileName, bytes, inspected.mimeType);
 
-  return submitForAnalysis(job.id, bytes, inspected.mimeType, documentType);
+  // Wave 3 Phase 2, Step 7 — no synchronous Azure submission here anymore.
+  // The job is returned as `pending`; the worker (src/worker/) claims and
+  // submits it asynchronously. See docs/adr/0013.
+  return job;
 }
 
 export interface BatchFileResult {
@@ -358,19 +566,14 @@ export async function processZipBatch(
 
     await persistOriginalFile(job.id, organizationId, entry.fileName, entry.bytes, inspected.mimeType);
 
-    try {
-      await submitForAnalysis(job.id, entry.bytes, inspected.mimeType, documentType);
-      quota.pagesUsed += inspected.pageCount;
-      quota.documentsUsed += 1;
-      results.push({ fileName: entry.fileName, status: "processing", jobId: job.id });
-    } catch (error) {
-      results.push({
-        fileName: entry.fileName,
-        status: "failed",
-        jobId: job.id,
-        reason: errorMessage(error, "Document submission failed."),
-      });
-    }
+    quota.pagesUsed += inspected.pageCount;
+    quota.documentsUsed += 1;
+    // "processing" here describes this file's outcome in the batch
+    // response — accepted into the pipeline — not the job's literal DB
+    // status, which stays `pending` until the worker picks it up (Wave 3
+    // Phase 2, Step 7; locked decision #3). No response-schema change:
+    // BatchFileResult's status values are unchanged.
+    results.push({ fileName: entry.fileName, status: "processing", jobId: job.id });
   }
 
   const accepted = results.filter((result) => result.status === "processing").length;
@@ -408,53 +611,15 @@ export async function submitUpload(
 }
 
 /**
- * Fetches a job's latest known state, polling Azure once for a fresh
- * status if the job is still in flight. Terminal jobs (completed / failed
- * / rejected_quota) are returned straight from the database.
+ * Wave 3 Phase 2, Step 7 — a pure database read. Live Azure polling and
+ * all Azure-related writes moved to the worker's own
+ * `checkClaimedJobProgress`, which is now the sole owner of processing and
+ * polling (docs/adr/0013; locked decision #9). This function no longer has
+ * any opinion on the job's status — pending, processing, or terminal, it
+ * just returns whatever the database currently has.
  */
 export async function getJobStatus(organizationId: string, jobId: string): Promise<DocumentJobRow> {
-  const job = await getDocumentJobForOrganization(jobId, organizationId);
-
-  if (job.status !== "pending" && job.status !== "processing") {
-    return job;
-  }
-
-  if (!job.azure_operation_id) {
-    return job;
-  }
-
-  const azureStatus = await getAnalysisOperationStatus(job.azure_operation_id);
-
-  if (azureStatus.status === "succeeded") {
-    const resultJson = azureStatus.analyzeResult ?? null;
-    const updated = await updateDocumentJob(job.id, {
-      status: "completed",
-      result_json: resultJson,
-      average_confidence: computeAverageConfidence(resultJson),
-    });
-    await recordLifecycleEvent(job.id, "processing_completed", null, "processing", "completed");
-    return updated;
-  }
-
-  if (azureStatus.status === "failed") {
-    const failureMessage = azureStatus.error?.message ?? "Azure Document Intelligence analysis failed.";
-    // Azure fully processed this request and reported the failure itself
-    // (as opposed to a transport-level error, which never reaches this
-    // branch — see getAnalysisOperationStatus) — a content-level failure,
-    // always terminal: retrying without changing the document won't help.
-    const updated = await updateDocumentJob(job.id, {
-      status: "failed",
-      error_message: failureMessage,
-      is_retryable: false,
-    });
-    await recordLifecycleEvent(job.id, "processing_failed", null, "processing", "failed", {
-      errorMessage: failureMessage,
-      isRetryable: false,
-    });
-    return updated;
-  }
-
-  return job;
+  return getDocumentJobForOrganization(jobId, organizationId);
 }
 
 /**

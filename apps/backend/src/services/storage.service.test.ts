@@ -5,15 +5,17 @@ vi.mock("@/config/supabase", () => ({
 }));
 
 const { supabaseAdmin } = await import("@/config/supabase");
-const { buildStoragePath, uploadDocumentFile, createSignedPreviewUrl, deleteDocumentFile } = await import(
-  "@/services/storage.service"
-);
+const { buildStoragePath, uploadDocumentFile, createSignedPreviewUrl, deleteDocumentFile, downloadDocumentFile } =
+  await import("@/services/storage.service");
 
-function mockBucket(overrides: Partial<Record<"upload" | "createSignedUrl" | "remove", ReturnType<typeof vi.fn>>> = {}) {
+function mockBucket(
+  overrides: Partial<Record<"upload" | "createSignedUrl" | "remove" | "download", ReturnType<typeof vi.fn>>> = {},
+) {
   const bucket = {
     upload: vi.fn().mockResolvedValue({ data: { path: "x" }, error: null }),
     createSignedUrl: vi.fn().mockResolvedValue({ data: { signedUrl: "https://signed.example/x" }, error: null }),
     remove: vi.fn().mockResolvedValue({ data: [], error: null }),
+    download: vi.fn().mockResolvedValue({ data: new Blob([new Uint8Array([1, 2, 3])]), error: null }),
     ...overrides,
   };
   vi.mocked(supabaseAdmin.storage.from).mockReturnValue(bucket as never);
@@ -75,6 +77,25 @@ describe("createSignedPreviewUrl", () => {
     mockBucket({ createSignedUrl: vi.fn().mockResolvedValue({ data: null, error: { message: "object not found" } }) });
 
     await expect(createSignedPreviewUrl("org_1/job_1/missing.pdf")).rejects.toThrow(/Failed to create/);
+  });
+});
+
+describe("downloadDocumentFile", () => {
+  it("downloads the object and returns its bytes", async () => {
+    const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46]);
+    const bucket = mockBucket({ download: vi.fn().mockResolvedValue({ data: new Blob([bytes]), error: null }) });
+
+    const result = await downloadDocumentFile("org_1/job_1/invoice.pdf");
+
+    expect(supabaseAdmin.storage.from).toHaveBeenCalledWith("documents");
+    expect(bucket.download).toHaveBeenCalledWith("org_1/job_1/invoice.pdf");
+    expect(result).toEqual(bytes);
+  });
+
+  it("throws AppError when Supabase Storage returns an error", async () => {
+    mockBucket({ download: vi.fn().mockResolvedValue({ data: null, error: { message: "object not found" } }) });
+
+    await expect(downloadDocumentFile("org_1/job_1/missing.pdf")).rejects.toThrow(/Failed to download/);
   });
 });
 

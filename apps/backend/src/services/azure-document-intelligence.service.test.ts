@@ -70,4 +70,40 @@ describe("beginDocumentAnalysis", () => {
       beginDocumentAnalysis(new Uint8Array([1]), "application/pdf", "prebuilt-invoice"),
     ).rejects.toThrow(/no Operation-Location header/);
   });
+
+  it("captures Retry-After (seconds) on a 429 that survives fetchWithRetry's own intra-request retries — Wave 3 Phase 2's job-level retry scheduling reads this", async () => {
+    vi.useFakeTimers();
+    try {
+      fetchMock.mockResolvedValue(new Response("rate limited", { status: 429, headers: { "retry-after": "17" } }));
+
+      const resultPromise = beginDocumentAnalysis(new Uint8Array([1]), "application/pdf", "prebuilt-invoice");
+      // Attach the rejection assertion *before* advancing timers, so the
+      // promise is never briefly unhandled while fetchWithRetry's 5
+      // internal backoff sleeps get flushed.
+      const assertion = expect(resultPromise).rejects.toMatchObject({
+        details: { status: 429, retryAfterSeconds: 17 },
+      });
+      await vi.runAllTimersAsync();
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("omits retryAfterSeconds from details when Azure sends a 429 with no Retry-After header", async () => {
+    vi.useFakeTimers();
+    try {
+      fetchMock.mockResolvedValue(new Response("rate limited", { status: 429 }));
+
+      const resultPromise = beginDocumentAnalysis(new Uint8Array([1]), "application/pdf", "prebuilt-invoice");
+      const assertion = resultPromise.catch((error: { details: Record<string, unknown> }) => {
+        expect(error.details).toMatchObject({ status: 429 });
+        expect(error.details).not.toHaveProperty("retryAfterSeconds");
+      });
+      await vi.runAllTimersAsync();
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

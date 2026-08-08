@@ -83,9 +83,25 @@ export async function beginDocumentAnalysis(
 
   if (response.status !== 202) {
     const body = await safeReadText(response);
+    const details: Record<string, unknown> = { status: response.status, body };
+
+    // Smallest additive capture needed for Wave 3 Phase 2's job-level
+    // retry scheduling to honor Azure's own rate-limit window instead of
+    // guessing via the generic backoff formula — see
+    // documents.service.ts#computeNextAttemptDelayMs. This is a 429 that
+    // survived fetchWithRetry's own intra-request retries above, so it's
+    // a genuinely sustained rate limit, not a momentary blip.
+    if (response.status === 429) {
+      const retryAfterHeader = response.headers.get("retry-after");
+      const retryAfterSeconds = retryAfterHeader ? Number(retryAfterHeader) : NaN;
+      if (Number.isFinite(retryAfterSeconds)) {
+        details.retryAfterSeconds = retryAfterSeconds;
+      }
+    }
+
     throw new AzureServiceError(
       `Azure Document Intelligence rejected the analysis request (HTTP ${response.status}).`,
-      { status: response.status, body },
+      details,
     );
   }
 

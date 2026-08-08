@@ -1,0 +1,16 @@
+-- Wave 3 Phase 2 — the one new lifecycle event Phase 1's ADR 0012
+-- explicitly deferred ("no meaning yet with no worker to trigger it").
+-- Fired exactly once per retry attempt, when a worker begins processing
+-- a job it just claimed fresh (not renewed) with retry_count > 0 — see
+-- documents.service.ts#submitClaimedJobForProcessing and
+-- docs/adr/0013-wave-3-phase-2-processing-worker.md for the full
+-- justification (why this is the one genuinely new domain fact Wave 2's
+-- original nine-event taxonomy had no way to represent, and why
+-- retry-exhaustion stays a `processing_failed` metadata flag rather than
+-- its own event type).
+--
+-- ALTER TYPE ... ADD VALUE cannot be used in the same transaction as a
+-- statement that references the new value — not a concern here, since
+-- this migration only adds the value; every application query that uses
+-- it runs in a later, separate transaction.
+alter type public.document_job_event_type add value 'processing_retried';

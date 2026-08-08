@@ -336,3 +336,38 @@ export async function claimOrRenewDocumentJob(
 
   return data?.id ? data : null;
 }
+
+/**
+ * Wave 3 Phase 2 — the fencing primitive. Applies `patch` only if the row's
+ * current `lease_epoch` still matches `expectedEpoch` (the value the
+ * worker captured when it claimed or last resumed the job), in a single
+ * atomic `UPDATE ... WHERE id = ... AND lease_epoch = ...`. Returns `null`
+ * — not an error — when the epoch no longer matches: this is the expected,
+ * correct outcome for a worker that has lost its lease to another claimant
+ * (see docs/adr/0012), and the caller must treat it as "I no longer own
+ * this job, stop," never retry the write or assume partial success.
+ * Every worker-originated write to document_jobs (persisting an Azure
+ * operation id, persisting a terminal result) must go through this, never
+ * the unconditioned `updateDocumentJob` above, which stays reserved for
+ * the HTTP-driven paths that have nothing to do with claims.
+ */
+export async function updateDocumentJobIfEpochMatches(
+  id: string,
+  expectedEpoch: number,
+  patch: DocumentJobUpdate,
+): Promise<DocumentJobRow | null> {
+  const { data, error } = await supabaseAdmin
+    .from("document_jobs")
+    .update(patch)
+    .eq("id", id)
+    .eq("lease_epoch", expectedEpoch)
+    .select("*")
+    .maybeSingle();
+
+  if (error) {
+    console.error("[documents.repository] updateDocumentJobIfEpochMatches failed", { id, expectedEpoch, patch, error });
+    throw new AppError(500, "INTERNAL_ERROR", error.message);
+  }
+
+  return data;
+}

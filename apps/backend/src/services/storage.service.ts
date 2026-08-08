@@ -44,6 +44,25 @@ export async function createSignedPreviewUrl(path: string, expiresInSeconds = 36
   return data.signedUrl;
 }
 
+/**
+ * Wave 3 Phase 2 — the worker's only way to obtain a claimed job's bytes,
+ * since it runs in a separate process with no access to the original
+ * upload request's in-memory data. Returns raw bytes only, deliberately
+ * not a `SupportedDocumentMimeType` — the caller re-derives that from the
+ * bytes themselves via `file-inspector.ts#inspectDocumentFile`, the same
+ * magic-byte detection already trusted at upload time, rather than
+ * trusting Storage's own stored content-type metadata uncritically.
+ */
+export async function downloadDocumentFile(path: string): Promise<Uint8Array> {
+  const { data, error } = await supabaseAdmin.storage.from(env.SUPABASE_STORAGE_BUCKET).download(path);
+
+  if (error || !data) {
+    throw new AppError(500, "INTERNAL_ERROR", `Failed to download the stored file: ${error?.message ?? "unknown error"}`);
+  }
+
+  return new Uint8Array(await data.arrayBuffer());
+}
+
 export async function deleteDocumentFile(path: string): Promise<void> {
   const { error } = await supabaseAdmin.storage.from(env.SUPABASE_STORAGE_BUCKET).remove([path]);
 

@@ -19,7 +19,8 @@ export type DocumentJobEventType =
   | "review_rejected"
   | "review_reset"
   | "file_removed"
-  | "document_deleted";
+  | "document_deleted"
+  | "processing_retried";
 
 export interface Database {
   public: {

@@ -24,6 +24,7 @@ function createQueryBuilderMock(result: QueryResult) {
   const chain: any = {
     select: vi.fn(() => chain),
     insert: vi.fn(() => chain),
+    update: vi.fn(() => chain),
     eq: vi.fn(() => chain),
     is: vi.fn(() => chain),
     order: vi.fn(() => chain),
@@ -445,6 +446,43 @@ describe("claimOrRenewDocumentJob", () => {
 
     await expect(
       documentsRepository.claimOrRenewDocumentJob({ workerId: "worker_1", leaseSeconds: 180, maxRetries: 3 }),
+    ).rejects.toThrow(AppError);
+  });
+});
+
+describe("updateDocumentJobIfEpochMatches", () => {
+  it("updates the row and returns it when the epoch matches", async () => {
+    const updated = jobRow({ status: "processing", lease_epoch: 2 });
+    const chain = createQueryBuilderMock({ data: updated, error: null });
+    vi.mocked(supabaseAdmin.from).mockReturnValue(chain);
+
+    const result = await documentsRepository.updateDocumentJobIfEpochMatches("job_1", 2, {
+      status: "processing",
+      azure_operation_id: "op_1",
+    });
+
+    expect(supabaseAdmin.from).toHaveBeenCalledWith("document_jobs");
+    expect(chain.update).toHaveBeenCalledWith({ status: "processing", azure_operation_id: "op_1" });
+    expect(chain.eq).toHaveBeenCalledWith("id", "job_1");
+    expect(chain.eq).toHaveBeenCalledWith("lease_epoch", 2);
+    expect(result).toEqual(updated);
+  });
+
+  it("returns null (not an error, not a partial write) when the epoch no longer matches", async () => {
+    const chain = createQueryBuilderMock({ data: null, error: null });
+    vi.mocked(supabaseAdmin.from).mockReturnValue(chain);
+
+    const result = await documentsRepository.updateDocumentJobIfEpochMatches("job_1", 2, { status: "completed" });
+
+    expect(result).toBeNull();
+  });
+
+  it("throws AppError when Supabase returns an error", async () => {
+    const chain = createQueryBuilderMock({ data: null, error: { message: "db exploded" } });
+    vi.mocked(supabaseAdmin.from).mockReturnValue(chain);
+
+    await expect(
+      documentsRepository.updateDocumentJobIfEpochMatches("job_1", 2, { status: "completed" }),
     ).rejects.toThrow(AppError);
   });
 });

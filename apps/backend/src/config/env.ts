@@ -29,6 +29,16 @@ const envSchema = z.object({
   STRIPE_WEBHOOK_SECRET: z.string().min(1),
   STRIPE_PRICE_ID_BASIC: z.string().min(1),
   STRIPE_PRICE_ID_PRO: z.string().min(1),
+
+  // Wave 3 Phase 2 — operational knobs for src/worker/, not read by the
+  // API process. Deliberately env-configurable (unlike the retry backoff
+  // formula's constants in documents.service.ts, which are policy, not a
+  // per-deployment tuning value — see docs/adr/0013). Defaults match the
+  // approved Wave 3 Phase 2 decisions.
+  WORKER_CONCURRENCY: z.coerce.number().int().positive().default(5),
+  WORKER_LEASE_SECONDS: z.coerce.number().int().positive().default(180),
+  WORKER_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(5_000),
+  WORKER_MAX_RETRIES: z.coerce.number().int().min(0).default(3),
 });
 
 export type Env = z.infer<typeof envSchema>;
