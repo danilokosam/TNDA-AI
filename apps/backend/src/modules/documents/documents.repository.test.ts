@@ -394,7 +394,28 @@ describe("claimOrRenewDocumentJob", () => {
     expect(result).toEqual(jobRow({ claimed_by: "worker_1" }));
   });
 
-  it("returns null when nothing was available to claim (not an error)", async () => {
+  it("returns null when nothing was available to claim, given PostgREST's real object-of-nulls shape (not an error)", async () => {
+    // The RPC's plpgsql return type is the `document_jobs` composite row;
+    // a genuine "nothing to claim" result is a SQL NULL of that
+    // composite, which PostgREST serializes as an object with every
+    // field set to `null` — NOT a literal JSON `null`. Confirmed
+    // empirically against the real database during Wave 3 Phase 2's live
+    // verification; a bare `data: null` mock (as this test used to use)
+    // cannot catch a regression back to `return data ?? null`, since
+    // that also passes a bare `null` straight through.
+    const allNullRow = Object.fromEntries(Object.keys(jobRow()).map((key) => [key, null]));
+    vi.mocked(supabaseAdmin.rpc).mockResolvedValue({ data: allNullRow, error: null } as any);
+
+    const result = await documentsRepository.claimOrRenewDocumentJob({
+      workerId: "worker_1",
+      leaseSeconds: 180,
+      maxRetries: 3,
+    });
+
+    expect(result).toBeNull();
+  });
+
+  it("also returns null for a literal JSON null (defensive — not the shape PostgREST actually returns, but still handled)", async () => {
     vi.mocked(supabaseAdmin.rpc).mockResolvedValue({ data: null, error: null } as any);
 
     const result = await documentsRepository.claimOrRenewDocumentJob({
@@ -404,6 +425,19 @@ describe("claimOrRenewDocumentJob", () => {
     });
 
     expect(result).toBeNull();
+  });
+
+  it("passes a real claimed row through unchanged, including a job whose id happens to sort near other falsy-looking fields", async () => {
+    const realRow = jobRow({ id: "job_42", claimed_by: "worker_1", status: "pending", retry_count: 0, average_confidence: null });
+    vi.mocked(supabaseAdmin.rpc).mockResolvedValue({ data: realRow, error: null } as any);
+
+    const result = await documentsRepository.claimOrRenewDocumentJob({
+      workerId: "worker_1",
+      leaseSeconds: 180,
+      maxRetries: 3,
+    });
+
+    expect(result).toEqual(realRow);
   });
 
   it("throws AppError when Supabase returns an error", async () => {

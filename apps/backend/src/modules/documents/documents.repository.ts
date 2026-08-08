@@ -306,6 +306,19 @@ export interface ClaimDocumentJobParams {
  * aggregation functions) already does — the RPC itself is grant-restricted
  * to the service-role caller only, never exposed to `authenticated` (see
  * the migration's own comment and docs/adr/0012).
+ *
+ * A "nothing to claim" result from the RPC is a SQL NULL of the
+ * `document_jobs` composite row type (the plpgsql function's `v_job`
+ * variable, never assigned) — PostgREST serializes that as a JS object
+ * with every field set to `null` (`{ id: null, status: null, ... }`),
+ * NOT a literal JSON `null`. Confirmed empirically against the real
+ * database during Wave 3 Phase 2's live verification: `data ?? null`
+ * alone let this object-of-nulls through as a truthy value, which the
+ * worker's claim loop then mistook for a genuinely held job — a real
+ * bug discovered only once something actually ran this RPC unattended,
+ * in a loop, against a real "nothing left to claim" state. `id` is the
+ * primary key, never null on an actual claimed row, so it's the
+ * reliable discriminator between the two shapes.
  */
 export async function claimOrRenewDocumentJob(
   params: ClaimDocumentJobParams,
@@ -321,5 +334,5 @@ export async function claimOrRenewDocumentJob(
     throw new AppError(500, "INTERNAL_ERROR", error.message);
   }
 
-  return data ?? null;
+  return data?.id ? data : null;
 }
