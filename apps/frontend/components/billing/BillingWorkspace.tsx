@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { toast } from "sonner";
 import { LoaderCircle } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -73,7 +74,9 @@ export function BillingWorkspace({ role }: BillingWorkspaceProps) {
   useEffect(() => {
     if (!checkoutPending || !subscriptionQuery.data) return;
     pollAttemptsRef.current += 1;
-    if (isRealSubscription(subscriptionQuery.data.subscription) || pollAttemptsRef.current >= CHECKOUT_POLL_MAX_ATTEMPTS) {
+    const isConfirmed = isRealSubscription(subscriptionQuery.data.subscription);
+    if (isConfirmed) toast.success("Subscription updated");
+    if (isConfirmed || pollAttemptsRef.current >= CHECKOUT_POLL_MAX_ATTEMPTS) {
       setCheckoutPending(false);
     }
   }, [checkoutPending, subscriptionQuery.data]);
@@ -90,7 +93,10 @@ export function BillingWorkspace({ role }: BillingWorkspaceProps) {
   function handleSelectPlan(planId: string) {
     if (!isCheckoutablePlanId(planId)) return;
     setCheckoutPlanId(planId);
-    checkoutMutation.mutate({ planId });
+    checkoutMutation.mutate(
+      { planId },
+      { onError: (error) => toast.error(error.message) },
+    );
   }
 
   if (checkoutPending) {
@@ -135,7 +141,7 @@ export function BillingWorkspace({ role }: BillingWorkspaceProps) {
         status={subscription.status}
         hasStripeSubscription={hasStripeSubscription}
         canManageBilling={canManageBilling}
-        onManagePortal={() => portalMutation.mutate()}
+        onManagePortal={() => portalMutation.mutate(undefined, { onError: (error) => toast.error(error.message) })}
         isPortalPending={portalMutation.isPending}
         portalError={portalMutation.isError ? portalMutation.error.message : null}
       />

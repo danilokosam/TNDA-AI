@@ -1,10 +1,19 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { toast } from "sonner";
 import { useUploadDocument } from "@/features/upload/hooks";
 import { useUploadQueue } from "@/features/upload/queue";
 import { cacheFileForPreview } from "@/features/results/preview-cache";
 import { ApiError } from "@/lib/api/response";
+import type { UploadResponse } from "@/types/api";
+
+/** `kind === "batch"` covers a whole `.zip` in one upload call — the toast reports what the backend actually accepted/rejected, not just "success". */
+function describeUploadSuccess(response: UploadResponse): string {
+  if (response.kind === "single") return `${response.job.fileName} uploaded`;
+  const { accepted, rejected, totalFiles } = response.batch;
+  return rejected > 0 ? `Uploaded ${accepted} of ${totalFiles} files (${rejected} rejected)` : `${accepted} files uploaded`;
+}
 
 /**
  * Drives the queue's "queued" items through `useUploadDocument` one at a
@@ -35,10 +44,12 @@ export function useUploadController() {
           if (response.kind === "single") {
             cacheFileForPreview(response.job.jobId, next.file);
           }
+          toast.success(describeUploadSuccess(response));
           queue.dispatch({ type: "upload-succeeded", id: next.id, response });
         },
         onError: (error) => {
           const errorMessage = error instanceof ApiError ? error.message : "Upload failed. Please try again.";
+          toast.error(errorMessage);
           queue.dispatch({ type: "upload-failed", id: next.id, errorMessage });
         },
         onSettled: () => {

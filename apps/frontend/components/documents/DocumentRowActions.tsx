@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { toast } from "sonner";
 import { CircleAlert, EllipsisVertical } from "lucide-react";
 import {
   AlertDialog,
@@ -61,12 +62,24 @@ export function DocumentRowActions({ job }: DocumentRowActionsProps) {
   // it explicitly.
   const handleConfirmRemoveFile = (event: { preventDefault: () => void }) => {
     event.preventDefault();
-    removeFile.mutate(job.jobId, { onSuccess: () => setConfirmingAction(null) });
+    removeFile.mutate(job.jobId, {
+      onSuccess: () => {
+        setConfirmingAction(null);
+        toast.success("File removed");
+      },
+      onError: (error) => toast.error(mutationErrorMessage(error)),
+    });
   };
 
   const handleConfirmDelete = (event: { preventDefault: () => void }) => {
     event.preventDefault();
-    deleteDocument.mutate(job.jobId, { onSuccess: () => setConfirmingAction(null) });
+    deleteDocument.mutate(job.jobId, {
+      onSuccess: () => {
+        setConfirmingAction(null);
+        toast.success("Document deleted");
+      },
+      onError: (error) => toast.error(mutationErrorMessage(error)),
+    });
   };
 
   return (

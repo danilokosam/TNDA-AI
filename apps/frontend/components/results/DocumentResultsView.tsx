@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import { CircleAlert, CircleCheck, CircleX, Clock, LoaderCircle, type LucideIcon } from "lucide-react";
 import {
   AlertDialog,
@@ -145,23 +146,59 @@ export function DocumentResultsView({ jobId }: DocumentResultsViewProps) {
   };
 
   const handleSave = () => {
-    saveCorrections.mutate({ jobId, corrections: draft }, { onSuccess: () => setDraft({}) });
+    saveCorrections.mutate(
+      { jobId, corrections: draft },
+      {
+        onSuccess: () => {
+          setDraft({});
+          toast.success("Field changes saved");
+        },
+        onError: (error) => toast.error(mutationErrorMessage(error)),
+      },
+    );
   };
 
   const handleConfirm = () => {
-    confirmReview.mutate({ jobId, corrections: draft }, { onSuccess: () => setDraft({}) });
+    confirmReview.mutate(
+      { jobId, corrections: draft },
+      {
+        onSuccess: () => {
+          setDraft({});
+          toast.success("Document confirmed");
+        },
+        onError: (error) => toast.error(mutationErrorMessage(error)),
+      },
+    );
   };
 
   const handleReject = () => {
-    rejectReview.mutate({ jobId, corrections: draft }, { onSuccess: () => setDraft({}) });
+    rejectReview.mutate(
+      { jobId, corrections: draft },
+      {
+        onSuccess: () => {
+          setDraft({});
+          toast.success("Document rejected");
+        },
+        onError: (error) => toast.error(mutationErrorMessage(error)),
+      },
+    );
   };
 
   const handleRemoveFile = () => {
-    removeFile.mutate(jobId);
+    removeFile.mutate(jobId, {
+      onSuccess: () => toast.success("File removed"),
+      onError: (error) => toast.error(mutationErrorMessage(error)),
+    });
   };
 
   const handleDeleteDocument = () => {
-    deleteDocument.mutate(jobId, { onSuccess: () => router.push("/documents") });
+    deleteDocument.mutate(jobId, {
+      onSuccess: () => {
+        toast.success("Document deleted");
+        router.push("/documents");
+      },
+      onError: (error) => toast.error(mutationErrorMessage(error)),
+    });
   };
 
   return (
