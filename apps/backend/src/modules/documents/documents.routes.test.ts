@@ -19,6 +19,7 @@ vi.mock("@/modules/documents/documents.repository", () => ({
   listDocumentJobsForOrganization: vi.fn(),
   listFieldCorrections: vi.fn(),
   insertFieldCorrections: vi.fn(),
+  insertDocumentJobEvent: vi.fn(),
 }));
 
 vi.mock("@/services/storage.service", () => ({
@@ -114,6 +115,8 @@ function jobRow(overrides: Partial<DocumentJobRow> = {}): DocumentJobRow {
     reviewed_by: null,
     reviewed_at: null,
     deleted_at: null,
+    retry_count: 0,
+    is_retryable: null,
     error_message: null,
     created_at: "2026-01-15T00:00:00.000Z",
     updated_at: "2026-01-15T00:00:05.000Z",

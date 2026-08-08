@@ -33,7 +33,18 @@ export async function inspectDocumentFile(
   fileName: string,
   bytes: Uint8Array,
 ): Promise<InspectedFile> {
-  const detected = await fileTypeFromBuffer(bytes);
+  // A file whose header merely resembles a known format (e.g. valid magic
+  // bytes followed by a corrupt/truncated internal structure) can make
+  // `fileTypeFromBuffer` throw while trying to parse further, rather than
+  // returning `undefined` — discovered via direct testing, not previously
+  // documented. Treated the same as "type not detected": neither is a safe
+  // file to hand to a document parser downstream.
+  let detected: Awaited<ReturnType<typeof fileTypeFromBuffer>>;
+  try {
+    detected = await fileTypeFromBuffer(bytes);
+  } catch {
+    detected = undefined;
+  }
 
   if (!detected || !isSupportedMimeType(detected.mime)) {
     throw new UnsupportedFileTypeError(

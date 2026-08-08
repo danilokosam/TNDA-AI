@@ -89,6 +89,26 @@ describe("DocumentFieldsTable", () => {
     expect(screen.queryByText("90%")).not.toBeInTheDocument();
   });
 
+  it("gives each field's input an accessible name matching the field, for screen-reader navigation by form field", () => {
+    render(
+      <DocumentFieldsTable
+        fields={[
+          field({ name: "Vendor", originalValue: "Acme Corp", effectiveValue: "Acme Corp" }),
+          field({ name: "Total", originalValue: "$50.00", effectiveValue: "$50.00" }),
+        ]}
+        draft={{}}
+        onFieldChange={vi.fn()}
+      />,
+    );
+
+    // Queries by computed accessible name (real ARIA semantics), not by
+    // reading the aria-label attribute directly — proving a screen reader
+    // would actually announce the right field, not just that some
+    // attribute string happens to be present.
+    expect(screen.getByRole("textbox", { name: "Vendor" })).toHaveValue("Acme Corp");
+    expect(screen.getByRole("textbox", { name: "Total" })).toHaveValue("$50.00");
+  });
+
   it("does not show 'Edited' when the current value matches the original", () => {
     render(
       <DocumentFieldsTable

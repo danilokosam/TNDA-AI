@@ -33,6 +33,7 @@ function createQueryBuilderMock(result: QueryResult) {
     lte: vi.fn(() => chain),
     lt: vi.fn(() => chain),
     maybeSingle: vi.fn(() => Promise.resolve(result)),
+    single: vi.fn(() => Promise.resolve(result)),
     then: (onfulfilled: (value: QueryResult) => unknown) => Promise.resolve(result).then(onfulfilled),
   };
   return chain;
@@ -70,8 +71,24 @@ function jobRow(overrides: Partial<Record<string, unknown>> = {}) {
     reviewed_by: null,
     reviewed_at: null,
     deleted_at: null,
+    retry_count: 0,
+    is_retryable: null,
     created_at: "2026-01-15T00:00:00.000Z",
     updated_at: "2026-01-15T00:00:05.000Z",
+    ...overrides,
+  };
+}
+
+function eventRow(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: "event_1",
+    document_job_id: "job_1",
+    event_type: "job_created",
+    actor_user_id: "user_1",
+    from_status: null,
+    to_status: "pending",
+    metadata: {},
+    created_at: "2026-01-15T00:00:00.000Z",
     ...overrides,
   };
 }
@@ -293,5 +310,63 @@ describe("insertFieldCorrections", () => {
         { document_job_id: "job_1", field_name: "Total", previous_value: null, new_value: "$50.00", edited_by: "user_1" },
       ]),
     ).rejects.toThrow(AppError);
+  });
+});
+
+describe("insertDocumentJobEvent", () => {
+  it("inserts a single event row and returns it", async () => {
+    const row = eventRow();
+    const chain = createQueryBuilderMock({ data: row, error: null });
+    vi.mocked(supabaseAdmin.from).mockReturnValue(chain);
+
+    const input = {
+      document_job_id: "job_1",
+      event_type: "job_created" as const,
+      actor_user_id: "user_1",
+      from_status: null,
+      to_status: "pending",
+      metadata: {},
+    };
+    const result = await documentsRepository.insertDocumentJobEvent(input);
+
+    expect(supabaseAdmin.from).toHaveBeenCalledWith("document_job_events");
+    expect(chain.insert).toHaveBeenCalledWith(input);
+    expect(result).toEqual(row);
+  });
+
+  it("throws AppError when Supabase returns an error", async () => {
+    const chain = createQueryBuilderMock({ data: null, error: { message: "db exploded" } });
+    vi.mocked(supabaseAdmin.from).mockReturnValue(chain);
+
+    await expect(
+      documentsRepository.insertDocumentJobEvent({
+        document_job_id: "job_1",
+        event_type: "job_created",
+        actor_user_id: "user_1",
+        from_status: null,
+        to_status: "pending",
+      }),
+    ).rejects.toThrow(AppError);
+  });
+});
+
+describe("listDocumentJobEvents", () => {
+  it("scopes to the job and orders oldest first (full chronological history)", async () => {
+    const chain = createQueryBuilderMock({ data: [eventRow()], error: null });
+    vi.mocked(supabaseAdmin.from).mockReturnValue(chain);
+
+    const result = await documentsRepository.listDocumentJobEvents("job_1");
+
+    expect(supabaseAdmin.from).toHaveBeenCalledWith("document_job_events");
+    expect(chain.eq).toHaveBeenCalledWith("document_job_id", "job_1");
+    expect(chain.order).toHaveBeenCalledWith("created_at", { ascending: true });
+    expect(result).toEqual([eventRow()]);
+  });
+
+  it("throws AppError when Supabase returns an error", async () => {
+    const chain = createQueryBuilderMock({ data: null, error: { message: "db exploded" } });
+    vi.mocked(supabaseAdmin.from).mockReturnValue(chain);
+
+    await expect(documentsRepository.listDocumentJobEvents("job_1")).rejects.toThrow(AppError);
   });
 });

@@ -84,6 +84,7 @@ graph TD
 
     SupaAuth[("Supabase Auth<br/>session verification / refresh")]
     SupaDB[("Supabase PostgreSQL<br/>service-role access, RLS as defense-in-depth")]
+    SupaStorage[("Supabase Storage<br/>private bucket, signed-URL previews")]
     Azure["Azure Document Intelligence<br/>(external REST API)"]
     Stripe["Stripe<br/>Checkout / Billing Portal / Webhooks"]
 
@@ -97,13 +98,13 @@ graph TD
     Services -->|HTTPS, Bearer token| Backend
 
     Backend -->|service-role client| SupaDB
+    Backend -->|upload original + create signed URLs| SupaStorage
     Backend -->|submit + poll,<br/>HTTP 202 async pattern| Azure
     Backend -->|Checkout / Portal / webhook sync| Stripe
 ```
 
 Notes on what this diagram deliberately does **not** show, because it doesn't exist in the current system:
 
-- **No Supabase Storage.** Uploaded files are never persisted anywhere — they're read into memory, validated, submitted to Azure, and discarded. There is no object-storage component in this architecture today (see §8, §11).
 - **No background job processing / worker / queue.** Document status advances only when something polls for it — either the frontend polling the backend, or the backend making one live call to Azure at that moment. There is no independent process advancing jobs in the background (see §7, §11).
 - **The frontend's only Supabase relationship is Auth**, for session cookies — never Postgres data access. The backend is the only application component that reads or writes the database.
 
@@ -120,6 +121,9 @@ TNDA-AI/
 │   ├── config/           # Shared base tsconfig.json — real, used by both apps
 │   ├── types/            # Scaffolded for future shared types — empty today
 │   └── shared/           # Scaffolded for future shared runtime utilities — empty today
+├── docs/
+│   ├── adr/               # Architecture Decision Records — see §12
+│   └── document-domain-architecture.md  # Proposed future direction for the document domain — see §12
 ├── .github/workflows/    # CI (typecheck/lint/test — see §10)
 ├── PROGRESS.md            # Project-level session log (decisions + why)
 ├── ARCHITECTURE.md         # This document
@@ -128,7 +132,7 @@ TNDA-AI/
 └── package.json            # Root scripts only fan out to turbo; no application code
 ```
 
-There is no top-level `docs/` directory today — documentation currently lives as `README.md` (root + per-app) and `PROGRESS.md` (root + per-app) files.
+Documentation lives as `README.md` (root + per-app) and `PROGRESS.md` (root + per-app) files, plus the `docs/` directory above (ADRs and the document-domain roadmap — see §12).
 
 ### `apps/backend/src/`
 
@@ -140,7 +144,7 @@ There is no top-level `docs/` directory today — documentation currently lives 
 | `middlewares/` | Cross-cutting HTTP concerns applied as Elysia plugins: bearer-token verification + tenant context injection (`auth.middleware.ts`), centralized error normalization (`error.middleware.ts`), and an in-memory fixed-window rate limiter keyed by client IP (`rate-limit.middleware.ts`). | These concerns apply across every module and don't belong inside any one of them. |
 | `utils/` | Pure, dependency-light helpers used across modules: magic-byte MIME detection + PDF page counting (`file-inspector.ts`), in-memory `.zip` extraction (`zip.ts`), Azure per-field confidence averaging (`confidence.ts`), and the `AppError` hierarchy (`errors.ts`). | Logic with no external I/O of its own, reused by more than one module, kept trivially unit-testable. |
 
-`apps/backend/scripts/` holds standalone operational scripts run directly via `bun run scripts/...` — a SQL migration runner (`db-migrate.ts`) and a live, real-Azure end-to-end pipeline test (`test-e2e-azure.ts`) — deliberately outside `src/`, since neither is part of the running application itself. `apps/backend/supabase/migrations/` holds ten sequentially numbered SQL files that are the database schema's authoritative history (see §8).
+`apps/backend/scripts/` holds standalone operational scripts run directly via `bun run scripts/...` — a SQL migration runner (`db-migrate.ts`) and a live, real-Azure end-to-end pipeline test (`test-e2e-azure.ts`) — deliberately outside `src/`, since neither is part of the running application itself. `apps/backend/supabase/migrations/` holds thirteen sequentially numbered SQL files that are the database schema's authoritative history (see §8).
 
 ### `apps/frontend/`
 
@@ -376,13 +380,13 @@ Covered in detail in §5's Document Processing Flow. Two things worth restating 
 
 ## 8. Data Persistence
 
-### Supabase: database and auth, no storage
+### Supabase: database, auth, and storage
 
-Supabase provides two things to this system: **PostgreSQL** (the only database) and **Supabase Auth** (the only identity provider, used by both apps — the backend for orchestration/verification, the frontend only for session/cookie lifecycle). **Supabase Storage is not used anywhere in this system.** Uploaded files are read into memory, validated, submitted to Azure, and never written to disk or any object store — this is a deliberate, load-bearing architectural fact (it's the reason the frontend's document preview is session-only, §6, §11), not an oversight.
+Supabase provides three things to this system: **PostgreSQL** (the only database), **Supabase Auth** (the only identity provider, used by both apps — the backend for orchestration/verification, the frontend only for session/cookie lifecycle), and **Supabase Storage** — a private `documents` bucket the backend uploads each original file to, at `{organizationId}/{jobId}/{fileName}` (migration `0011`). No public read; access is exclusively through backend-generated signed URLs (`storage.service.ts`), the same service-role-client-plus-explicit-scoping model `document_jobs` itself uses (ADR 0005). A file's presence is independent of the job record itself — `document_jobs.storage_path` is nullable, and can be cleared (file removed) while the job and its extracted data are kept, a deliberate piece of the file-lifecycle work in `PROGRESS.md` §3.18. Storage itself was introduced in `PROGRESS.md` §3.15.
 
 ### Migrations
 
-Ten sequentially numbered SQL files in `apps/backend/supabase/migrations/`, the schema's authoritative history:
+Thirteen sequentially numbered SQL files in `apps/backend/supabase/migrations/`, the schema's authoritative history:
 
 | # | Adds |
 |---|---|
@@ -396,6 +400,11 @@ Ten sequentially numbered SQL files in `apps/backend/supabase/migrations/`, the 
 | `0008` | `get_organization_monthly_usage(org_id)` — the pre-flight quota-check function |
 | `0009` | `organizations.stripe_customer_id`, `subscriptions.stripe_customer_id`/`stripe_subscription_id` (the latter a **plain**, non-partial unique index — required for Stripe webhook upserts, which target `ON CONFLICT` with no `WHERE` clause) |
 | `0010` | `get_organization_job_stats`/`get_organization_daily_job_counts` — analytics functions backing the Dashboard's stats and trend chart |
+| `0011` | `storage.buckets` row for a private `documents` bucket + `document_jobs.storage_path` + a same-org RLS read policy on `storage.objects` (defense-in-depth; the backend's service-role client is the real access path) |
+| `0012` | `document_review_status` enum (`unreviewed/confirmed/rejected`) + `review_status`/`reviewed_by`/`reviewed_at` on `document_jobs` + the `document_field_corrections` audit-log table (full per-edit history, not a single current-value column) |
+| `0013` | `document_jobs.deleted_at` — soft-delete; the row and everything in it is always preserved, filtered out of normal list/get queries but deliberately not out of quota pre-flight checks |
+| `0014` | `document_job_events` — append-only lifecycle/domain event log (Wave 2 of `docs/document-domain-architecture.md`; see §8's "Lifecycle event log" note below and `docs/adr/0011-lifecycle-event-log-and-retry-state.md`) |
+| `0015` | `document_jobs.retry_count`/`.is_retryable` — durable retry-state schema for the Processing axis; schema only, no worker or automatic retry (same ADR) |
 
 Applied via either this project's own transactional migration runner (`bun run db:migrate`, tracked in a `public._migrations` table) or the Supabase CLI (`bun run db:push`, tracked separately) — the two are not interoperable against the same database.
 
@@ -411,6 +420,12 @@ Every table has `organization_id`-scoped `select` policies (and a same-org `inse
 
 `document_jobs` carries `document_type` (which Azure model was used) and `average_confidence` (computed once, at completion, from Azure's own per-field confidence scores — `null`, never a fabricated `0`, for `generic`/`prebuilt-layout` results, which have no per-field confidence at all) as persisted columns, alongside the raw `result_json` Azure returned. `result_json` is genuinely heterogeneous by design — its shape depends entirely on which Azure model processed the document (see §11) — and is stored as-is, not reshaped or normalized into a common structure server-side.
 
+### Lifecycle event log
+
+`document_job_events` (migration `0014`) is a single, append-only table recording domain-meaningful lifecycle transitions — nine event types (`job_created`, `processing_started`, `processing_completed`, `processing_failed`, `review_confirmed`, `review_rejected`, `review_reset`, `file_removed`, `document_deleted`), each carrying the affected job, a nullable actor (`null` for Azure-driven outcomes — `processing_started`/`completed`/`failed` — since attributing those to whichever user happened to be polling would misrepresent who caused them; the caller's user id for every human-initiated transition), a from/to status pair, a small bounded JSON payload, and a timestamp. `documents.service.ts#recordLifecycleEvent` is the single call site every transition funnels through, always invoked *after* the corresponding `document_jobs` write has already succeeded — `document_jobs` remains the sole source of truth for current state; the event log is a durable side effect, never event sourcing, and a failure recording an event is caught and logged, never allowed to fail the state transition it's describing. Deliberately independent of `document_field_corrections` (no FK either direction) — different question, different table (§9's field-correction history vs. this table's lifecycle history). No API route exposes it yet; it's internal-only until a real product need for querying it exists. Full reasoning, including the write-order consistency model's accepted crash-window limitation, in `docs/adr/0011-lifecycle-event-log-and-retry-state.md`.
+
+`document_jobs.retry_count`/`.is_retryable` (migration `0015`) are the durable retry-state columns the Processing axis was missing — `retry_count` stays `0` until Wave 3's worker exists to increment it; `is_retryable` is classified at the two points a job's `status` is ever set to `failed`, distinguishing a transient Azure failure (retryable) from one Azure itself reported as a content-level failure (terminal). Schema only — no worker, no scheduling, no automatic retry (see §11, and the same ADR).
+
 ### PostgreSQL functions
 
 Aggregation is pushed into the database rather than pulled into the app and summed: `get_organization_monthly_usage` (the pre-flight quota check), `get_organization_job_stats` and `get_organization_daily_job_counts` (Dashboard analytics). The daily-count series a Postgres `GROUP BY` produces is naturally **sparse** (only days with activity); gap-filling it into a complete, contiguous date range happens once, in the service layer, so every consumer of that data gets a chart-ready series without needing to know the query returns gaps.
@@ -421,11 +436,11 @@ Aggregation is pushed into the database rather than pulled into the app and summ
 
 ### Backend
 
-Vitest, run via Bun — 94 tests across 12 files. Route-level tests run fully in-process via Elysia's `app.handle(request)` (the real routes, the real error middleware, no port ever bound); repository tests mock `supabaseAdmin` with a minimal fake of Supabase's fluent query builder, covering both the success and `AppError`-on-failure path for every exported function; Stripe webhook signature verification is tested for real, with zero network calls, by signing a plain JS payload locally with `stripe.webhooks.generateTestHeaderStringAsync()` and handing it to the actual verification code. None of it needs real Supabase/Azure/Stripe credentials — `vitest.config.ts` supplies dummy, non-secret env values that satisfy `env.ts`'s eager Zod validation.
+Vitest, run via Bun — 239 tests across 22 files. Route-level tests run fully in-process via Elysia's `app.handle(request)` (the real routes, the real error middleware, no port ever bound); repository tests mock `supabaseAdmin` with a minimal fake of Supabase's fluent query builder, covering both the success and `AppError`-on-failure path for every exported function; Stripe webhook signature verification is tested for real, with zero network calls, by signing a plain JS payload locally with `stripe.webhooks.generateTestHeaderStringAsync()` and handing it to the actual verification code. None of it needs real Supabase/Azure/Stripe credentials — `vitest.config.ts` supplies dummy, non-secret env values that satisfy `env.ts`'s eager Zod validation.
 
 ### Frontend
 
-Vitest + Testing Library + jsdom — 140 tests across 23 files, built entirely under the TDD workflow described in §2 since Stage 3. Two environment-specific patterns exist because the stack genuinely requires them, not by accident: Route Handler tests that construct a `FormData`/`File` run under `@vitest-environment node` (jsdom's own `File`/`FormData` fail undici's native `Request.formData()` brand check — and Route Handlers are server code regardless, so this is also the semantically correct environment); tests that need real timer control over a polling interval use a small local `advanceUntil` helper, since Testing-Library's `waitFor` polls via a real `setInterval` that never fires while Vitest's fake timers are frozen.
+Vitest + Testing Library + jsdom — 277 tests across 38 files, built entirely under the TDD workflow described in §2 since Stage 3. Two environment-specific patterns exist because the stack genuinely requires them, not by accident: Route Handler tests that construct a `FormData`/`File` run under `@vitest-environment node` (jsdom's own `File`/`FormData` fail undici's native `Request.formData()` brand check — and Route Handlers are server code regardless, so this is also the semantically correct environment); tests that need real timer control over a polling interval use a small local `advanceUntil` helper, since Testing-Library's `waitFor` polls via a real `setInterval` that never fires while Vitest's fake timers are frozen.
 
 ### Typecheck, lint, and Turbo verification
 
@@ -476,8 +491,8 @@ A production image exists for the **backend only** — there is no Dockerfile, a
 
 - **`result_json` is genuinely heterogeneous, by design, not by oversight.** Its shape depends entirely on which Azure model processed the document: `invoice`/`receipt`/`identity_document` results have a `documents[].fields{name:{confidence,...}}` structure; `generic` (`prebuilt-layout`) results have none of that — only `{pages, tables, content}`. Every piece of code that reads this field (the backend's confidence averaging, the frontend's field-extraction logic) is written defensively against this — narrow, non-throwing, degrade-to-empty on anything unexpected — rather than assuming one canonical shape.
 - **Uploads are processed strictly sequentially on the client, never concurrently**, even when multiple files are queued at once. This mirrors the same rate-limiting caution that drives the polling backoff schedule: a burst of simultaneous upload requests from the one Next.js server proxying every user is the same category of risk as a burst of poll requests.
-- **The document preview cache is session-only and lives for exactly one browser tab's page lifetime.** It is a plain module-level `Map`, not persisted state — it survives a client-side route change but not a real page reload, and it holds nothing at all for any job reached outside the immediate upload→results flow (a reloaded results page, a job opened from a future History list). This is a direct, unavoidable consequence of the "no file storage" constraint below, not an independent limitation.
-- **No uploaded file is ever persisted anywhere.** There is no object storage in this system (§8) — a document exists as bytes in memory for exactly as long as one request/processing cycle needs it. A "view the original file again later" feature, for any job beyond the immediate post-upload flow, is not achievable without adding real storage infrastructure first.
+- **The document preview is backend-provided, via Supabase Storage and signed URLs, not session-only.** (Superseded constraint, as of `PROGRESS.md` §3.15 — see ADR 0009 for the original session-only design this replaced.) `document_jobs.storage_path` records where the original file lives; the Results page resolves a preview for any job, not just one reached immediately after upload, including after a reload or from History. A `DocumentPreviewSource` union still exists for the frontend, now with the signed remote URL as the primary source rather than an unproduced placeholder.
+- **A document's original file can be removed independently of the record.** (§8, migration `0011`; lifecycle built in `PROGRESS.md` §3.18.) Removing the file clears `storage_path` and leaves everything else — extracted fields, corrections, review status — untouched; deleting a document (soft-delete, `deleted_at`) is a separate action that also removes the file, but neither implies the other structurally.
 - **The job-status polling strategy is a real, load-bearing mitigation for a real backend limitation**, not just UX polish: the backend's rate limiter is a single, IP-keyed, in-memory fixed window (§7) — and because every user's traffic is proxied through the one Next.js server, it becomes a bucket effectively shared across *all* users of the app, not per-user. Backoff manages this; it does not fix it. The actual fix (keying the limiter on authenticated user identity instead of IP, and/or a shared store instead of an in-memory `Map`) is a backend change, out of scope for anything the frontend alone can do.
 - **`packages/types` and `packages/shared` are intentionally empty** (§2). The two apps' schema layers are on different major versions of the same validation library (Zod v3 backend, Zod v4 frontend) for reasons independent of this monorepo, and backend code assumes Bun-only APIs in places — real sharing is a deliberate future decision, not a mechanical relocation waiting to happen.
 - **There is no background job processing anywhere in this system** (§7). A document job only ever advances when something polls `GET /documents/jobs/:id` — the frontend while a user has that job's status visible, or (in principle) any other authenticated caller. A job nobody ever polls again simply never resolves past `pending`/`processing`, even though Azure itself finished processing it. This is a real production limitation for any workflow where a client might disconnect before a job completes, not a hypothetical edge case.
@@ -486,15 +501,17 @@ A production image exists for the **backend only** — there is no Dockerfile, a
 - **No team/role-management capability exists**, despite `profiles.role` (`owner`/`admin`/`member`) already existing in the schema and in RLS policies. There is no invite-a-teammate or change-a-role endpoint anywhere in the backend today.
 - **The frontend's billing capability is currently read-only.** The backend fully implements Checkout, the Billing Portal, and webhook-driven subscription sync (§7) — but the frontend only calls the read-only `GET /billing/subscription` today; `plans`/`checkout`/`portal` have no frontend service or BFF route yet.
 - **The Docker image has been built and run successfully outside of automated CI** (confirmed once, historically, by the project owner on their own machine — `apps/backend/PROGRESS.md` §11) but is not build-verified by any automated process today (§10) — a regression here would not be caught until someone builds it by hand again.
+- **`document_jobs.retry_count`/`.is_retryable` are durable but inert.** (§8, migration `0015`.) They're written on every failure so the data exists once Wave 3 needs it, but nothing reads them to actually retry anything — a failed job still requires a fresh upload to recover from, exactly as before this wave.
+- **The lifecycle event log can under-record, never over-record.** (§8, migration `0014`.) A crash or network failure between a `document_jobs` write and its corresponding `document_job_events` write can leave a real transition with no event row; the reverse (an event for a transition that didn't happen) cannot occur under the write-order model this table uses — see `docs/adr/0011-lifecycle-event-log-and-retry-state.md`.
 - **No idempotency/replay protection beyond Stripe's own signature and timestamp check.** The webhook handler doesn't record processed event IDs, so a Stripe redelivery of an already-handled event gets reprocessed. Currently harmless, since the sync operation is a pure upsert keyed by `stripe_subscription_id` — reprocessing just re-writes the same values — but would matter the moment any future webhook handler does something non-idempotent (e.g., sends an email per event).
 
 ---
 
 ## 12. Future Documentation Roadmap
 
-**Done since this document was first written**: [`docs/adr/`](./docs/adr/) now holds 10 numbered Architecture Decision Records covering the most significant decisions referenced throughout this document — start there for the fuller Context/Decision/Consequences treatment of anything marked with a decision reference above. The list below is what's still genuinely missing, intentionally not created as part of this pass:
+**Done since this document was first written**: [`docs/adr/`](./docs/adr/) now holds 10 numbered Architecture Decision Records covering the most significant decisions referenced throughout this document — start there for the fuller Context/Decision/Consequences treatment of anything marked with a decision reference above. [`docs/document-domain-architecture.md`](./docs/document-domain-architecture.md) is a second, narrower-scoped companion: where this document describes what exists today, that one proposes where the *document domain* specifically — bounded contexts, the full lifecycle, versioning/auditing strategy, and a prioritized wave-by-wave roadmap — should go next. The list below is what's still genuinely missing, intentionally not created as part of this pass:
 
-- **More ADRs.** Ten cover the highest-priority decisions; `PROGRESS.md`'s root §4 (29 numbered decisions total, each already stating its own reasoning) remains the source list for any not yet written up formally.
+- **More ADRs.** Ten cover the highest-priority decisions; `PROGRESS.md`'s root §4 (52 numbered decisions total, each already stating its own reasoning) remains the source list for any not yet written up formally.
 - **Formal sequence diagrams** for flows not yet covered at that level of detail — in particular the full Stripe webhook → subscription-sync state machine, and the pre-flight quota-check decision tree for `.zip` batches.
 - **Database schema documentation** — an entity-relationship diagram and a per-table reference (columns, constraints, RLS policies, which Postgres functions read/write each table), distinct from the raw migration files themselves.
 - **A formal API reference.** Swagger/OpenAPI UI is already live at the backend's own `/docs` endpoint, generated from the real route definitions — but there is no static, versioned API reference document alongside this repository's own documentation.

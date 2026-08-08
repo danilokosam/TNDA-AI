@@ -10,6 +10,16 @@ export type SubscriptionStatus = "trialing" | "active" | "past_due" | "canceled"
 export type DocumentJobStatus = "pending" | "processing" | "completed" | "failed" | "rejected_quota";
 export type DocumentType = "invoice" | "receipt" | "identity_document" | "generic";
 export type DocumentReviewStatus = "unreviewed" | "confirmed" | "rejected";
+export type DocumentJobEventType =
+  | "job_created"
+  | "processing_started"
+  | "processing_completed"
+  | "processing_failed"
+  | "review_confirmed"
+  | "review_rejected"
+  | "review_reset"
+  | "file_removed"
+  | "document_deleted";
 
 export interface Database {
   public: {
@@ -167,6 +177,8 @@ export interface Database {
           reviewed_by: string | null;
           reviewed_at: string | null;
           deleted_at: string | null;
+          retry_count: number;
+          is_retryable: boolean | null;
           created_at: string;
           updated_at: string;
         };
@@ -188,6 +200,8 @@ export interface Database {
           reviewed_by?: string | null;
           reviewed_at?: string | null;
           deleted_at?: string | null;
+          retry_count?: number;
+          is_retryable?: boolean | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -209,6 +223,8 @@ export interface Database {
           reviewed_by?: string | null;
           reviewed_at?: string | null;
           deleted_at?: string | null;
+          retry_count?: number;
+          is_retryable?: boolean | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -276,6 +292,52 @@ export interface Database {
           },
         ];
       };
+      document_job_events: {
+        Row: {
+          id: string;
+          document_job_id: string;
+          event_type: DocumentJobEventType;
+          actor_user_id: string | null;
+          from_status: string | null;
+          to_status: string | null;
+          metadata: Record<string, unknown>;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          document_job_id: string;
+          event_type: DocumentJobEventType;
+          actor_user_id?: string | null;
+          from_status?: string | null;
+          to_status?: string | null;
+          metadata?: Record<string, unknown>;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          document_job_id?: string;
+          event_type?: DocumentJobEventType;
+          actor_user_id?: string | null;
+          from_status?: string | null;
+          to_status?: string | null;
+          metadata?: Record<string, unknown>;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "document_job_events_document_job_id_fkey";
+            columns: ["document_job_id"];
+            referencedRelation: "document_jobs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "document_job_events_actor_user_id_fkey";
+            columns: ["actor_user_id"];
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
     };
     Views: {
       [_ in never]: never;
@@ -304,6 +366,7 @@ export interface Database {
       document_job_status: DocumentJobStatus;
       document_type: DocumentType;
       document_review_status: DocumentReviewStatus;
+      document_job_event_type: DocumentJobEventType;
     };
   };
 }

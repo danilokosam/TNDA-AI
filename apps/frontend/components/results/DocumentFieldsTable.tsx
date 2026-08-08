@@ -45,7 +45,11 @@ export function DocumentFieldsTable({ fields, draft, onFieldChange }: DocumentFi
             <tr key={field.name} className="border-b last:border-0">
               <td className="py-2 pr-4 font-medium">{field.name}</td>
               <td className="py-2 pr-4">
-                <Input value={value} onChange={(event) => onFieldChange(field.name, event.target.value)} />
+                <Input
+                  aria-label={field.name}
+                  value={value}
+                  onChange={(event) => onFieldChange(field.name, event.target.value)}
+                />
               </td>
               <td className="py-2 text-muted-foreground">
                 {isEdited ? "Edited" : field.confidence !== null ? formatPercent(field.confidence) : "—"}

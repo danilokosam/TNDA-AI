@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+**Superseded** (`PROGRESS.md` §3.15, "Architecture redesign, Part 1 — Persistent document storage"). Migration `0011` added a private Supabase Storage bucket and backend-generated signed URLs; the `remote-url` branch of `DocumentPreviewSource` — reserved but unproduced when this ADR was written — is now the primary, real preview source for any job, not just the one just uploaded in the current session. The `session-blob`/`unavailable` branches and the swappable-union shape described below remain accurate as *implementation* detail; only the Context/Decision's "no persistence" premise is reversed. Kept here, unedited below, as the historical record of why session-only came first.
 
 ## Context
 

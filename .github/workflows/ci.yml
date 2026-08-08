@@ -32,6 +32,19 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Fails the build on any high-or-critical advisory in the resolved
+      # dependency tree (via the npm registry's advisory database). Pinned
+      # to high+ deliberately, not pnpm audit's moderate default: this repo
+      # currently carries one pre-existing moderate advisory (`file-type`,
+      # GHSA-5v7r-6r5c-r473, an ASF-parser infinite loop — irrelevant to
+      # this app's supported document types) that moderate would fail on
+      # unconditionally. High/critical is the bar this policy actually
+      # guarantees catches something worth blocking a merge over; anything
+      # below that is visible by running `pnpm audit` locally but doesn't
+      # block CI on its own.
+      - name: Dependency vulnerability scan
+        run: pnpm audit --audit-level=high
+
       - name: Typecheck
         run: pnpm typecheck
 

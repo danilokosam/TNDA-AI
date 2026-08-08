@@ -17,6 +17,7 @@ This is a pnpm + Turborepo monorepo with two applications:
 |---|---|
 | [`ARCHITECTURE.md`](./ARCHITECTURE.md) | The canonical, current-state architecture reference — what the system is, how its pieces fit together, and why. Start here. |
 | [`docs/adr/`](./docs/adr/) | Architecture Decision Records — the fuller Context/Decision/Consequences record behind the most significant individual decisions referenced from `ARCHITECTURE.md`. |
+| [`docs/document-domain-architecture.md`](./docs/document-domain-architecture.md) | Proposed future state for the document domain specifically — bounded contexts, the full lifecycle, versioning/auditing strategy, and a prioritized roadmap. Forward-looking, not current-state. |
 | [`PROGRESS.md`](./PROGRESS.md) | The chronological session log — decisions as they were made, bugs found and fixed, verification performed. [`apps/backend/PROGRESS.md`](./apps/backend/PROGRESS.md) and [`apps/frontend/PROGRESS.md`](./apps/frontend/PROGRESS.md) hold the same, at finer per-app detail. |
 
 ## Getting started

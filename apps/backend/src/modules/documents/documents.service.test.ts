@@ -1,9 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { zipSync } from "fflate";
+import { AzureServiceError } from "@/utils/errors";
 
 // documents.service.ts's upload path predates this project's test suite
-// and remains largely untested (quota math, zip batching) — see
-// PROGRESS.md. This file is scoped narrowly to the new storage-persistence
-// wiring, not a full backfill of the whole module.
+// and had remained largely untested (quota math, zip batching) — this file
+// said so explicitly, above, before this session. The `submitUpload` block
+// below closes the specific gap most squarely inside "the upload-security
+// boundary" (size-limit enforcement, before any bytes are even read; the
+// single-vs-batch routing decision) without attempting a full backfill of
+// quota math/zip-batch internals, which stay untested here deliberately,
+// same as before.
 
 vi.mock("@/utils/file-inspector", () => ({ inspectDocumentFile: vi.fn() }));
 vi.mock("@/modules/organization/organization.service", () => ({ getEffectivePlan: vi.fn() }));
@@ -18,6 +24,7 @@ vi.mock("@/modules/documents/documents.repository", () => ({
   getDocumentJobForOrganizationIncludingDeleted: vi.fn(),
   listFieldCorrections: vi.fn(),
   insertFieldCorrections: vi.fn(),
+  insertDocumentJobEvent: vi.fn(),
 }));
 vi.mock("@/modules/documents/documents.strategy", () => ({ getProcessingStrategy: vi.fn() }));
 vi.mock("@/services/storage.service", () => ({
@@ -26,6 +33,7 @@ vi.mock("@/services/storage.service", () => ({
   createSignedPreviewUrl: vi.fn(),
   deleteDocumentFile: vi.fn(),
 }));
+vi.mock("@/services/azure-document-intelligence.service", () => ({ getAnalysisOperationStatus: vi.fn() }));
 
 const fileInspector = await import("@/utils/file-inspector");
 const orgService = await import("@/modules/organization/organization.service");
@@ -33,8 +41,12 @@ const orgRepository = await import("@/modules/organization/organization.reposito
 const documentsRepository = await import("@/modules/documents/documents.repository");
 const documentsStrategy = await import("@/modules/documents/documents.strategy");
 const storageService = await import("@/services/storage.service");
+const azureService = await import("@/services/azure-document-intelligence.service");
 const {
+  submitUpload,
   processSingleDocument,
+  processZipBatch,
+  getJobStatus,
   getDocumentPreviewUrl,
   getFieldCorrections,
   saveFieldCorrections,
@@ -76,8 +88,24 @@ function jobFixture(overrides: Record<string, unknown> = {}) {
     reviewed_by: null,
     reviewed_at: null,
     deleted_at: null,
+    retry_count: 0,
+    is_retryable: null,
     created_at: "2026-01-01T00:00:00.000Z",
     updated_at: "2026-01-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function eventRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "event_1",
+    document_job_id: "job_1",
+    event_type: "job_created",
+    actor_user_id: "user_1",
+    from_status: null,
+    to_status: "pending",
+    metadata: {},
+    created_at: "2026-01-01T00:00:00.000Z",
     ...overrides,
   };
 }
@@ -101,12 +129,14 @@ beforeEach(() => {
   vi.mocked(documentsRepository.updateDocumentJob).mockImplementation(
     async (id, patch) => jobFixture({ id, ...patch }) as never,
   );
+  vi.mocked(documentsRepository.insertDocumentJobEvent).mockResolvedValue(eventRow() as never);
   vi.mocked(documentsStrategy.getProcessingStrategy).mockReturnValue({
     documentType: "invoice",
     submit: vi.fn().mockResolvedValue({ operationReference: "https://azure.example/op/1" }),
   });
   vi.mocked(storageService.buildStoragePath).mockReturnValue("org_1/job_1/invoice.pdf");
   vi.mocked(storageService.uploadDocumentFile).mockResolvedValue(undefined);
+  vi.mocked(storageService.deleteDocumentFile).mockResolvedValue(undefined);
 });
 
 describe("processSingleDocument — storage persistence", () => {
@@ -143,6 +173,65 @@ describe("processSingleDocument — storage persistence", () => {
     ).rejects.toThrow();
 
     expect(storageService.uploadDocumentFile).not.toHaveBeenCalled();
+  });
+});
+
+describe("submitUpload — the upload-security boundary's entrypoint", () => {
+  function fakeFile(sizeBytes: number, name = "invoice.pdf"): File {
+    // A duck-typed stand-in, not a real `File` backed by `sizeBytes` of
+    // actual memory — lets the over-limit case assert that no bytes are
+    // ever read (`arrayBuffer` uncalled), and keeps the test fast at any
+    // size, including realistic multi-MB thresholds.
+    return {
+      size: sizeBytes,
+      name,
+      arrayBuffer: vi.fn(),
+    } as unknown as File;
+  }
+
+  it("rejects a file over the configured size limit with PayloadTooLargeError, before reading any of its bytes", async () => {
+    const { env } = await import("@/config/env");
+    const overLimitFile = fakeFile(env.MAX_UPLOAD_SIZE_MB * 1024 * 1024 + 1);
+
+    await expect(submitUpload("org_1", "user_1", overLimitFile, "invoice")).rejects.toThrow(
+      `Upload exceeds the maximum allowed size of ${env.MAX_UPLOAD_SIZE_MB}MB.`,
+    );
+    expect(overLimitFile.arrayBuffer).not.toHaveBeenCalled();
+    expect(documentsRepository.createDocumentJob).not.toHaveBeenCalled();
+  });
+
+  it("accepts a file exactly at the size limit (boundary is inclusive, not off-by-one)", async () => {
+    const { env } = await import("@/config/env");
+    const exactLimitBytes = new Uint8Array(env.MAX_UPLOAD_SIZE_MB * 1024 * 1024);
+    const exactLimitFile = new File([exactLimitBytes], "invoice.pdf");
+
+    const result = await submitUpload("org_1", "user_1", exactLimitFile, "invoice");
+
+    expect(result.kind).toBe("single");
+  });
+
+  it("routes a real .zip file to batch processing, based on its actual bytes, not its filename", async () => {
+    vi.mocked(orgRepository.getDocumentsSubmittedSince).mockResolvedValue(0);
+    const archive = zipSync({ "receipt.pdf": new Uint8Array([1, 2, 3]) });
+    // Named with a misleading extension — routing must read the real
+    // magic bytes (isZipFile), the same invariant file-inspector.ts
+    // upholds one layer deeper for the files a batch then unpacks into.
+    const zipFile = new File([archive], "not-a-zip.pdf");
+
+    const result = await submitUpload("org_1", "user_1", zipFile, "invoice");
+
+    expect(result.kind).toBe("batch");
+    if (result.kind === "batch") {
+      expect(result.batch.totalFiles).toBe(1);
+    }
+  });
+
+  it("routes a non-.zip file to single-document processing", async () => {
+    const singleFile = new File([new Uint8Array([1, 2, 3])], "invoice.pdf");
+
+    const result = await submitUpload("org_1", "user_1", singleFile, "invoice");
+
+    expect(result.kind).toBe("single");
   });
 });
 
@@ -455,5 +544,356 @@ describe("deleteDocument", () => {
       "job_1",
       expect.objectContaining({ deleted_at: expect.any(String) }),
     );
+  });
+});
+
+// --- Wave 2: lifecycle event log ---------------------------------------
+// Each describe block below locks down one part of the document_job_events
+// invariant set: the right event fires for the right transition, with the
+// right actor (null for system-caused Azure outcomes, the caller's userId
+// for human-caused ones), and — just as important — no event fires for an
+// operation that was a no-op or that never actually completed.
+
+describe("lifecycle events — job submission", () => {
+  it("records job_created then processing_started, in order, on a successful submission", async () => {
+    await processSingleDocument("org_1", "user_1", "invoice.pdf", new Uint8Array([1]), "invoice");
+
+    expect(documentsRepository.insertDocumentJobEvent).toHaveBeenNthCalledWith(1, {
+      document_job_id: "job_1",
+      event_type: "job_created",
+      actor_user_id: "user_1",
+      from_status: null,
+      to_status: "pending",
+      metadata: { fileName: "invoice.pdf", documentType: "invoice" },
+    });
+    expect(documentsRepository.insertDocumentJobEvent).toHaveBeenNthCalledWith(2, {
+      document_job_id: "job_1",
+      event_type: "processing_started",
+      actor_user_id: null,
+      from_status: "pending",
+      to_status: "processing",
+      metadata: {},
+    });
+  });
+
+  it("records only job_created (to=rejected_quota) when the file is rejected by quota — never processing_started", async () => {
+    vi.mocked(orgRepository.getMonthlyPagesUsed).mockResolvedValue(1000);
+    vi.mocked(documentsRepository.createDocumentJob).mockResolvedValue(
+      jobFixture({ status: "rejected_quota" }) as never,
+    );
+
+    await expect(
+      processSingleDocument("org_1", "user_1", "invoice.pdf", new Uint8Array([1]), "invoice"),
+    ).rejects.toThrow();
+
+    expect(documentsRepository.insertDocumentJobEvent).toHaveBeenCalledTimes(1);
+    expect(documentsRepository.insertDocumentJobEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ event_type: "job_created", to_status: "rejected_quota", actor_user_id: "user_1" }),
+    );
+  });
+
+  it("records job_created then processing_failed when submission to Azure fails", async () => {
+    vi.mocked(documentsStrategy.getProcessingStrategy).mockReturnValue({
+      documentType: "invoice",
+      submit: vi.fn().mockRejectedValue(new AzureServiceError("service unavailable", { status: 503 })),
+    });
+
+    await expect(
+      processSingleDocument("org_1", "user_1", "invoice.pdf", new Uint8Array([1]), "invoice"),
+    ).rejects.toThrow();
+
+    expect(documentsRepository.insertDocumentJobEvent).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ event_type: "job_created", to_status: "pending" }),
+    );
+    expect(documentsRepository.insertDocumentJobEvent).toHaveBeenNthCalledWith(2, {
+      document_job_id: "job_1",
+      event_type: "processing_failed",
+      actor_user_id: null,
+      from_status: "pending",
+      to_status: "failed",
+      metadata: { errorMessage: "service unavailable", isRetryable: true },
+    });
+  });
+
+  it("records job_created per accepted file in a zip batch, with that file's own name in metadata", async () => {
+    vi.mocked(documentsRepository.createDocumentJob).mockResolvedValue(
+      jobFixture({ id: "job_zip_1", file_name: "receipt.pdf" }) as never,
+    );
+    const archive = zipSync({ "receipt.pdf": new Uint8Array([1, 2, 3]) });
+
+    await processZipBatch("org_1", "user_1", archive, "invoice");
+
+    expect(documentsRepository.insertDocumentJobEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        document_job_id: "job_zip_1",
+        event_type: "job_created",
+        metadata: { fileName: "receipt.pdf", documentType: "invoice" },
+      }),
+    );
+  });
+});
+
+describe("lifecycle events — polling outcomes", () => {
+  it("records processing_completed, with a system (null) actor, when Azure reports success", async () => {
+    vi.mocked(documentsRepository.getDocumentJobForOrganization).mockResolvedValue(
+      jobFixture({ status: "processing", azure_operation_id: "op_1" }) as never,
+    );
+    vi.mocked(azureService.getAnalysisOperationStatus).mockResolvedValue({
+      status: "succeeded",
+      analyzeResult: { documents: [] },
+    } as never);
+
+    await getJobStatus("org_1", "job_1");
+
+    expect(documentsRepository.insertDocumentJobEvent).toHaveBeenCalledWith({
+      document_job_id: "job_1",
+      event_type: "processing_completed",
+      actor_user_id: null,
+      from_status: "processing",
+      to_status: "completed",
+      metadata: {},
+    });
+  });
+
+  it("records processing_failed (terminal) when Azure itself reports the operation failed", async () => {
+    vi.mocked(documentsRepository.getDocumentJobForOrganization).mockResolvedValue(
+      jobFixture({ status: "processing", azure_operation_id: "op_1" }) as never,
+    );
+    vi.mocked(azureService.getAnalysisOperationStatus).mockResolvedValue({
+      status: "failed",
+      error: { code: "InvalidContent", message: "unreadable document" },
+    } as never);
+
+    await getJobStatus("org_1", "job_1");
+
+    expect(documentsRepository.insertDocumentJobEvent).toHaveBeenCalledWith({
+      document_job_id: "job_1",
+      event_type: "processing_failed",
+      actor_user_id: null,
+      from_status: "processing",
+      to_status: "failed",
+      metadata: { errorMessage: "unreadable document", isRetryable: false },
+    });
+  });
+
+  it("records nothing for a terminal job returned straight from the database (no Azure call)", async () => {
+    vi.mocked(documentsRepository.getDocumentJobForOrganization).mockResolvedValue(
+      jobFixture({ status: "completed" }) as never,
+    );
+
+    await getJobStatus("org_1", "job_1");
+
+    expect(azureService.getAnalysisOperationStatus).not.toHaveBeenCalled();
+    expect(documentsRepository.insertDocumentJobEvent).not.toHaveBeenCalled();
+  });
+
+  it("records nothing while Azure hasn't reached a terminal state yet", async () => {
+    vi.mocked(documentsRepository.getDocumentJobForOrganization).mockResolvedValue(
+      jobFixture({ status: "processing", azure_operation_id: "op_1" }) as never,
+    );
+    vi.mocked(azureService.getAnalysisOperationStatus).mockResolvedValue({ status: "running" } as never);
+
+    await getJobStatus("org_1", "job_1");
+
+    expect(documentsRepository.updateDocumentJob).not.toHaveBeenCalled();
+    expect(documentsRepository.insertDocumentJobEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe("lifecycle events — review decisions", () => {
+  it("records review_confirmed with the caller as actor", async () => {
+    vi.mocked(documentsRepository.getDocumentJobForOrganization).mockResolvedValue(completedJobWithFields as never);
+
+    await confirmDocumentReview("org_1", "job_1", "user_1");
+
+    expect(documentsRepository.insertDocumentJobEvent).toHaveBeenCalledWith({
+      document_job_id: "job_1",
+      event_type: "review_confirmed",
+      actor_user_id: "user_1",
+      from_status: "unreviewed",
+      to_status: "confirmed",
+      metadata: {},
+    });
+  });
+
+  it("records review_rejected with the caller as actor", async () => {
+    vi.mocked(documentsRepository.getDocumentJobForOrganization).mockResolvedValue(completedJobWithFields as never);
+
+    await rejectDocumentReview("org_1", "job_1", "user_1");
+
+    expect(documentsRepository.insertDocumentJobEvent).toHaveBeenCalledWith({
+      document_job_id: "job_1",
+      event_type: "review_rejected",
+      actor_user_id: "user_1",
+      from_status: "unreviewed",
+      to_status: "rejected",
+      metadata: {},
+    });
+  });
+
+  it("records review_reset when a correction lands on an already-confirmed job", async () => {
+    vi.mocked(documentsRepository.getDocumentJobForOrganization).mockResolvedValue(
+      { ...completedJobWithFields, review_status: "confirmed" } as never,
+    );
+    vi.mocked(documentsRepository.listFieldCorrections).mockResolvedValue([]);
+
+    await saveFieldCorrections("org_1", "job_1", "user_1", { VendorName: "Acme Corporation" });
+
+    expect(documentsRepository.insertDocumentJobEvent).toHaveBeenCalledWith({
+      document_job_id: "job_1",
+      event_type: "review_reset",
+      actor_user_id: "user_1",
+      from_status: "confirmed",
+      to_status: "unreviewed",
+      metadata: {},
+    });
+  });
+
+  it("records no review_reset event when the job was already unreviewed (nothing actually transitioned)", async () => {
+    vi.mocked(documentsRepository.getDocumentJobForOrganization).mockResolvedValue(completedJobWithFields as never);
+    vi.mocked(documentsRepository.listFieldCorrections).mockResolvedValue([]);
+
+    await saveFieldCorrections("org_1", "job_1", "user_1", { VendorName: "Acme Corporation" });
+
+    expect(documentsRepository.insertDocumentJobEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe("lifecycle events — file lifecycle", () => {
+  it("records file_removed when a file is actually removed", async () => {
+    vi.mocked(documentsRepository.getDocumentJobForOrganizationIncludingDeleted).mockResolvedValue(
+      jobFixture({ user_id: "user_1", storage_path: "org_1/job_1/invoice.pdf" }) as never,
+    );
+
+    await removeDocumentFile("org_1", "job_1", "user_1", "member");
+
+    expect(documentsRepository.insertDocumentJobEvent).toHaveBeenCalledWith({
+      document_job_id: "job_1",
+      event_type: "file_removed",
+      actor_user_id: "user_1",
+      from_status: "present",
+      to_status: "removed",
+      metadata: {},
+    });
+  });
+
+  it("records no event for an idempotent no-op remove (no file present)", async () => {
+    vi.mocked(documentsRepository.getDocumentJobForOrganizationIncludingDeleted).mockResolvedValue(
+      jobFixture({ user_id: "user_1", storage_path: null }) as never,
+    );
+
+    await removeDocumentFile("org_1", "job_1", "user_1", "member");
+
+    expect(documentsRepository.insertDocumentJobEvent).not.toHaveBeenCalled();
+  });
+
+  it("records document_deleted when a document is soft-deleted", async () => {
+    vi.mocked(documentsRepository.getDocumentJobForOrganizationIncludingDeleted).mockResolvedValue(
+      jobFixture({ user_id: "user_1", storage_path: null, deleted_at: null }) as never,
+    );
+
+    await deleteDocument("org_1", "job_1", "user_1", "member");
+
+    expect(documentsRepository.insertDocumentJobEvent).toHaveBeenCalledWith({
+      document_job_id: "job_1",
+      event_type: "document_deleted",
+      actor_user_id: "user_1",
+      from_status: "active",
+      to_status: "deleted",
+      metadata: {},
+    });
+  });
+
+  it("records no event for an idempotent no-op delete (already deleted)", async () => {
+    vi.mocked(documentsRepository.getDocumentJobForOrganizationIncludingDeleted).mockResolvedValue(
+      jobFixture({ user_id: "user_1", deleted_at: "2026-01-20T00:00:00.000Z" }) as never,
+    );
+
+    await deleteDocument("org_1", "job_1", "user_1", "member");
+
+    expect(documentsRepository.insertDocumentJobEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe("lifecycle events — event-log failures never fail the underlying operation", () => {
+  it("still returns the confirmed job even when recording the event itself fails", async () => {
+    vi.mocked(documentsRepository.getDocumentJobForOrganization).mockResolvedValue(completedJobWithFields as never);
+    vi.mocked(documentsRepository.insertDocumentJobEvent).mockRejectedValue(new Error("db unreachable"));
+
+    const result = await confirmDocumentReview("org_1", "job_1", "user_1");
+
+    expect(result.review_status).toBe("confirmed");
+  });
+});
+
+describe("retry-state classification (is_retryable)", () => {
+  it("classifies a submission-time 5xx Azure failure as retryable", async () => {
+    vi.mocked(documentsStrategy.getProcessingStrategy).mockReturnValue({
+      documentType: "invoice",
+      submit: vi.fn().mockRejectedValue(new AzureServiceError("service unavailable", { status: 503 })),
+    });
+
+    await expect(
+      processSingleDocument("org_1", "user_1", "invoice.pdf", new Uint8Array([1]), "invoice"),
+    ).rejects.toThrow();
+
+    expect(documentsRepository.updateDocumentJob).toHaveBeenCalledWith("job_1", {
+      status: "failed",
+      error_message: "service unavailable",
+      is_retryable: true,
+    });
+  });
+
+  it("classifies a submission-time 4xx Azure rejection as non-retryable", async () => {
+    vi.mocked(documentsStrategy.getProcessingStrategy).mockReturnValue({
+      documentType: "invoice",
+      submit: vi.fn().mockRejectedValue(new AzureServiceError("bad request", { status: 400 })),
+    });
+
+    await expect(
+      processSingleDocument("org_1", "user_1", "invoice.pdf", new Uint8Array([1]), "invoice"),
+    ).rejects.toThrow();
+
+    expect(documentsRepository.updateDocumentJob).toHaveBeenCalledWith("job_1", {
+      status: "failed",
+      error_message: "bad request",
+      is_retryable: false,
+    });
+  });
+
+  it("classifies a network-level failure with no HTTP status as retryable", async () => {
+    vi.mocked(documentsStrategy.getProcessingStrategy).mockReturnValue({
+      documentType: "invoice",
+      submit: vi.fn().mockRejectedValue(new Error("fetch failed")),
+    });
+
+    await expect(
+      processSingleDocument("org_1", "user_1", "invoice.pdf", new Uint8Array([1]), "invoice"),
+    ).rejects.toThrow();
+
+    expect(documentsRepository.updateDocumentJob).toHaveBeenCalledWith("job_1", {
+      status: "failed",
+      error_message: "Failed to submit document for analysis.",
+      is_retryable: true,
+    });
+  });
+
+  it("always classifies an Azure-reported operation failure as non-retryable, regardless of Azure's own error code", async () => {
+    vi.mocked(documentsRepository.getDocumentJobForOrganization).mockResolvedValue(
+      jobFixture({ status: "processing", azure_operation_id: "op_1" }) as never,
+    );
+    vi.mocked(azureService.getAnalysisOperationStatus).mockResolvedValue({
+      status: "failed",
+      error: { code: "InvalidContent", message: "unreadable document" },
+    } as never);
+
+    await getJobStatus("org_1", "job_1");
+
+    expect(documentsRepository.updateDocumentJob).toHaveBeenCalledWith("job_1", {
+      status: "failed",
+      error_message: "unreadable document",
+      is_retryable: false,
+    });
   });
 });

@@ -2,17 +2,18 @@ import { env } from "@/config/env";
 import { inspectDocumentFile, type InspectedFile, type SupportedDocumentMimeType } from "@/utils/file-inspector";
 import { extractZipEntries } from "@/utils/zip";
 import { computeAverageConfidence } from "@/utils/confidence";
-import { AppError, ConflictError, ForbiddenError, PayloadTooLargeError, QuotaExceededError, ValidationError } from "@/utils/errors";
+import { AppError, AzureServiceError, ConflictError, ForbiddenError, PayloadTooLargeError, QuotaExceededError, ValidationError } from "@/utils/errors";
 import { getAnalysisOperationStatus } from "@/services/azure-document-intelligence.service";
 import { buildStoragePath, createSignedPreviewUrl, deleteDocumentFile, uploadDocumentFile } from "@/services/storage.service";
 import { getProcessingStrategy, type DocumentType } from "@/modules/documents/documents.strategy";
 import { getEffectivePlan } from "@/modules/organization/organization.service";
 import { getDocumentsSubmittedSince, getMonthlyPagesUsed, type PlanRow } from "@/modules/organization/organization.repository";
-import type { ProfileRole } from "@/config/database.types";
+import type { DocumentJobEventType, ProfileRole } from "@/config/database.types";
 import {
   createDocumentJob,
   getDocumentJobForOrganization,
   getDocumentJobForOrganizationIncludingDeleted,
+  insertDocumentJobEvent,
   insertFieldCorrections,
   listDocumentJobsForOrganization,
   listFieldCorrections,
@@ -40,6 +41,59 @@ function formatMb(bytes: number): string {
 
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof AppError ? error.message : fallback;
+}
+
+/**
+ * Records one row in the append-only lifecycle event log. Every call site
+ * below only ever calls this *after* the corresponding state-transition
+ * write has already succeeded — this function has no opinion on ordering,
+ * it just persists a row. A failure here is caught and logged, never
+ * allowed to fail the underlying user-facing operation or be mistaken for
+ * the transition itself having failed: the same non-fatal tier as
+ * persistOriginalFile's storage write. See
+ * docs/adr/0011-lifecycle-event-log-and-retry-state.md for the full
+ * consistency model and its accepted crash-window limitation.
+ */
+async function recordLifecycleEvent(
+  jobId: string,
+  eventType: DocumentJobEventType,
+  actorUserId: string | null,
+  fromStatus: string | null,
+  toStatus: string | null,
+  metadata: Record<string, unknown> = {},
+): Promise<void> {
+  try {
+    await insertDocumentJobEvent({
+      document_job_id: jobId,
+      event_type: eventType,
+      actor_user_id: actorUserId,
+      from_status: fromStatus,
+      to_status: toStatus,
+      metadata,
+    });
+  } catch (error) {
+    console.error("[documents.service] failed to record lifecycle event", { jobId, eventType, error });
+  }
+}
+
+/**
+ * Classifies a submission-time failure as retryable (transient — Azure
+ * unreachable, timed out, or returned a 5xx) or not (Azure explicitly
+ * rejected the request with a 4xx — retrying the identical request would
+ * fail the same way). Local validation failures (corrupt file, wrong
+ * format, quota) never reach this point: inspectDocumentFile and
+ * assertFileMeetsPlanConstraints already run, and are handled, before a
+ * job is ever submitted to Azure. No automatic retry acts on this
+ * classification yet (Wave 3) — see the ADR referenced above.
+ */
+function isRetryableSubmissionFailure(error: unknown): boolean {
+  if (error instanceof AzureServiceError) {
+    const status = error.details?.status;
+    if (typeof status === "number" && status >= 400 && status < 500) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /** Hard, per-file constraints that never depend on how much of the plan's quota is already used. */
@@ -129,12 +183,21 @@ async function submitForAnalysis(
   try {
     const strategy = getProcessingStrategy(documentType);
     const { operationReference } = await strategy.submit(bytes, mimeType);
-    return await updateDocumentJob(jobId, { status: "processing", azure_operation_id: operationReference });
+    const job = await updateDocumentJob(jobId, { status: "processing", azure_operation_id: operationReference });
+    await recordLifecycleEvent(jobId, "processing_started", null, "pending", "processing");
+    return job;
   } catch (error) {
     console.error("[documents.service] submitForAnalysis failed", { jobId, documentType, error });
+    const isRetryable = isRetryableSubmissionFailure(error);
+    const failureMessage = errorMessage(error, "Failed to submit document for analysis.");
     await updateDocumentJob(jobId, {
       status: "failed",
-      error_message: errorMessage(error, "Failed to submit document for analysis."),
+      error_message: failureMessage,
+      is_retryable: isRetryable,
+    });
+    await recordLifecycleEvent(jobId, "processing_failed", null, "pending", "failed", {
+      errorMessage: failureMessage,
+      isRetryable,
     });
     throw error;
   }
@@ -160,7 +223,7 @@ export async function processSingleDocument(
   const quotaCheck = checkMonthlyQuota(plan, { pagesUsed, documentsUsed }, inspected.pageCount);
 
   if (!quotaCheck.ok) {
-    await createDocumentJob({
+    const rejectedJob = await createDocumentJob({
       organization_id: organizationId,
       user_id: userId,
       file_name: fileName,
@@ -169,6 +232,10 @@ export async function processSingleDocument(
       status: "rejected_quota",
       document_type: documentType,
       error_message: quotaCheck.reason,
+    });
+    await recordLifecycleEvent(rejectedJob.id, "job_created", userId, null, "rejected_quota", {
+      fileName,
+      documentType,
     });
     throw new QuotaExceededError(quotaCheck.reason);
   }
@@ -182,6 +249,7 @@ export async function processSingleDocument(
     status: "pending",
     document_type: documentType,
   });
+  await recordLifecycleEvent(job.id, "job_created", userId, null, "pending", { fileName, documentType });
 
   await persistOriginalFile(job.id, organizationId, fileName, bytes, inspected.mimeType);
 
@@ -261,6 +329,10 @@ export async function processZipBatch(
         document_type: documentType,
         error_message: quotaCheck.reason,
       });
+      await recordLifecycleEvent(job.id, "job_created", userId, null, "rejected_quota", {
+        fileName: entry.fileName,
+        documentType,
+      });
       results.push({
         fileName: entry.fileName,
         status: "rejected_quota",
@@ -278,6 +350,10 @@ export async function processZipBatch(
       page_count: inspected.pageCount,
       status: "pending",
       document_type: documentType,
+    });
+    await recordLifecycleEvent(job.id, "job_created", userId, null, "pending", {
+      fileName: entry.fileName,
+      documentType,
     });
 
     await persistOriginalFile(job.id, organizationId, entry.fileName, entry.bytes, inspected.mimeType);
@@ -351,18 +427,31 @@ export async function getJobStatus(organizationId: string, jobId: string): Promi
 
   if (azureStatus.status === "succeeded") {
     const resultJson = azureStatus.analyzeResult ?? null;
-    return updateDocumentJob(job.id, {
+    const updated = await updateDocumentJob(job.id, {
       status: "completed",
       result_json: resultJson,
       average_confidence: computeAverageConfidence(resultJson),
     });
+    await recordLifecycleEvent(job.id, "processing_completed", null, "processing", "completed");
+    return updated;
   }
 
   if (azureStatus.status === "failed") {
-    return updateDocumentJob(job.id, {
+    const failureMessage = azureStatus.error?.message ?? "Azure Document Intelligence analysis failed.";
+    // Azure fully processed this request and reported the failure itself
+    // (as opposed to a transport-level error, which never reaches this
+    // branch — see getAnalysisOperationStatus) — a content-level failure,
+    // always terminal: retrying without changing the document won't help.
+    const updated = await updateDocumentJob(job.id, {
       status: "failed",
-      error_message: azureStatus.error?.message ?? "Azure Document Intelligence analysis failed.",
+      error_message: failureMessage,
+      is_retryable: false,
     });
+    await recordLifecycleEvent(job.id, "processing_failed", null, "processing", "failed", {
+      errorMessage: failureMessage,
+      isRetryable: false,
+    });
+    return updated;
   }
 
   return job;
@@ -511,6 +600,7 @@ export async function saveFieldCorrections(
   let resultJob = job;
   if (job.review_status !== "unreviewed") {
     resultJob = await updateDocumentJob(job.id, { review_status: "unreviewed", reviewed_by: null, reviewed_at: null });
+    await recordLifecycleEvent(job.id, "review_reset", userId, job.review_status, "unreviewed");
   }
 
   if (staged.length > 0) {
@@ -544,11 +634,21 @@ async function setDocumentReview(
     }
   }
 
-  return updateDocumentJob(job.id, {
+  const updated = await updateDocumentJob(job.id, {
     review_status: reviewStatus,
     reviewed_by: userId,
     reviewed_at: new Date().toISOString(),
   });
+
+  await recordLifecycleEvent(
+    job.id,
+    reviewStatus === "confirmed" ? "review_confirmed" : "review_rejected",
+    userId,
+    job.review_status,
+    reviewStatus,
+  );
+
+  return updated;
 }
 
 export function confirmDocumentReview(
@@ -606,7 +706,9 @@ export async function removeDocumentFile(
   }
 
   await deleteDocumentFile(job.storage_path);
-  return updateDocumentJob(job.id, { storage_path: null });
+  const updated = await updateDocumentJob(job.id, { storage_path: null });
+  await recordLifecycleEvent(job.id, "file_removed", userId, "present", "removed");
+  return updated;
 }
 
 /**
@@ -644,5 +746,7 @@ export async function deleteDocument(
     }
   }
 
-  return updateDocumentJob(job.id, { storage_path: null, deleted_at: new Date().toISOString() });
+  const updated = await updateDocumentJob(job.id, { storage_path: null, deleted_at: new Date().toISOString() });
+  await recordLifecycleEvent(job.id, "document_deleted", userId, "active", "deleted");
+  return updated;
 }

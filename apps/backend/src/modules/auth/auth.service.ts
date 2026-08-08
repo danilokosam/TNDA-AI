@@ -46,7 +46,16 @@ export async function signUp(input: SignUpInput): Promise<AuthResult> {
     // Supabase's auth schema and our public schema, so on any failure
     // after the auth user was created, clean it up manually to avoid
     // orphaned accounts that can never sign up again (duplicate email).
-    await deleteAuthUser(authUser.id);
+    // The cleanup itself has its own try/catch, deliberately: if it fails
+    // too, the *original* error is still what the caller needs to see —
+    // losing it in favor of a confusing "failed to delete auth user"
+    // message would erase the actual diagnostic trail while leaving the
+    // real problem (a failed signup) equally unsolved.
+    try {
+      await deleteAuthUser(authUser.id);
+    } catch (cleanupError) {
+      console.error(`Failed to roll back auth user ${authUser.id} after a signup error:`, cleanupError);
+    }
     throw error;
   }
 }

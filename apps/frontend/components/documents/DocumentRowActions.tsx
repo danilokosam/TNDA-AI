@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { EllipsisVertical } from "lucide-react";
+import { CircleAlert, EllipsisVertical } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -13,9 +13,11 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useDeleteDocument, useRemoveDocumentFile } from "@/features/documents/hooks";
+import { ApiError } from "@/lib/api/response";
 import type { JobDto } from "@/types/api";
 
 interface DocumentRowActionsProps {
@@ -23,6 +25,11 @@ interface DocumentRowActionsProps {
 }
 
 type ConfirmingAction = "remove-file" | "delete" | null;
+
+/** Same duplication call as `DocumentResultsView.tsx`'s identical helper — small and proportionate, not worth sharing across two files for three lines. */
+function mutationErrorMessage(error: unknown): string {
+  return error instanceof ApiError ? error.message : "Something went wrong. Please try again.";
+}
 
 /**
  * One `useRemoveDocumentFile`/`useDeleteDocument` instance per rendered
@@ -45,11 +52,20 @@ export function DocumentRowActions({ job }: DocumentRowActionsProps) {
   const removeFile = useRemoveDocumentFile();
   const deleteDocument = useDeleteDocument();
 
-  const handleConfirmRemoveFile = () => {
+  // `AlertDialogAction` is Radix's `DialogPrimitive.Close` under the hood —
+  // it closes the dialog on click by default, before an async mutation
+  // ever resolves. `preventDefault()` here stops that (Radix only skips
+  // its own close-on-click when the event comes back with
+  // `defaultPrevented`), so the dialog — and any error inside it — stays
+  // visible through a pending or failed mutation; only `onSuccess` closes
+  // it explicitly.
+  const handleConfirmRemoveFile = (event: { preventDefault: () => void }) => {
+    event.preventDefault();
     removeFile.mutate(job.jobId, { onSuccess: () => setConfirmingAction(null) });
   };
 
-  const handleConfirmDelete = () => {
+  const handleConfirmDelete = (event: { preventDefault: () => void }) => {
+    event.preventDefault();
     deleteDocument.mutate(job.jobId, { onSuccess: () => setConfirmingAction(null) });
   };
 
@@ -89,7 +105,7 @@ export function DocumentRowActions({ job }: DocumentRowActionsProps) {
 
       <AlertDialog
         open={confirmingAction === "remove-file"}
-        onOpenChange={(open) => !open && setConfirmingAction(null)}
+        onOpenChange={(open) => !open && !removeFile.isPending && setConfirmingAction(null)}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -99,16 +115,25 @@ export function DocumentRowActions({ job }: DocumentRowActionsProps) {
               exactly as they are — only the file preview stops being available.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {removeFile.error ? (
+            <Alert variant="destructive">
+              <CircleAlert />
+              <AlertDescription>{mutationErrorMessage(removeFile.error)}</AlertDescription>
+            </Alert>
+          ) : null}
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction variant="destructive" onClick={handleConfirmRemoveFile}>
-              Remove file
+            <AlertDialogCancel disabled={removeFile.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction variant="destructive" disabled={removeFile.isPending} onClick={handleConfirmRemoveFile}>
+              {removeFile.isPending ? "Removing…" : "Remove file"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
-      <AlertDialog open={confirmingAction === "delete"} onOpenChange={(open) => !open && setConfirmingAction(null)}>
+      <AlertDialog
+        open={confirmingAction === "delete"}
+        onOpenChange={(open) => !open && !deleteDocument.isPending && setConfirmingAction(null)}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete this document?</AlertDialogTitle>
@@ -117,10 +142,16 @@ export function DocumentRowActions({ job }: DocumentRowActionsProps) {
               not erased — this isn&apos;t something you can undo from here, though.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {deleteDocument.error ? (
+            <Alert variant="destructive">
+              <CircleAlert />
+              <AlertDescription>{mutationErrorMessage(deleteDocument.error)}</AlertDescription>
+            </Alert>
+          ) : null}
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction variant="destructive" onClick={handleConfirmDelete}>
-              Delete document
+            <AlertDialogCancel disabled={deleteDocument.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction variant="destructive" disabled={deleteDocument.isPending} onClick={handleConfirmDelete}>
+              {deleteDocument.isPending ? "Deleting…" : "Delete document"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

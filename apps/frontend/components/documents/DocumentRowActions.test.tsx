@@ -92,4 +92,50 @@ describe("DocumentRowActions", () => {
       expect((init as RequestInit)?.method).toBe("DELETE");
     });
   });
+
+  it("surfaces a failed Remove file as a visible error, not silently", async () => {
+    const { ApiError } = await import("@/lib/api/response");
+    vi.mocked(apiFetch).mockRejectedValue(new ApiError(403, "FORBIDDEN", "Only the uploader or an owner/admin can do this."));
+    const user = userEvent.setup();
+    render(<DocumentRowActions job={jobFixture()} />, { wrapper: createQueryWrapper() });
+
+    await user.click(screen.getByRole("button", { name: /open actions menu/i }));
+    await user.click(screen.getByRole("menuitem", { name: /remove file/i }));
+    const dialog = await screen.findByRole("alertdialog");
+    await user.click(within(dialog).getByRole("button", { name: /^remove file$/i }));
+
+    expect(await screen.findByText("Only the uploader or an owner/admin can do this.")).toBeInTheDocument();
+  });
+
+  it("surfaces a failed Delete document as a visible error, not silently", async () => {
+    const { ApiError } = await import("@/lib/api/response");
+    vi.mocked(apiFetch).mockRejectedValue(new ApiError(403, "FORBIDDEN", "Only the uploader or an owner/admin can do this."));
+    const user = userEvent.setup();
+    render(<DocumentRowActions job={jobFixture()} />, { wrapper: createQueryWrapper() });
+
+    await user.click(screen.getByRole("button", { name: /open actions menu/i }));
+    await user.click(screen.getByRole("menuitem", { name: /delete document/i }));
+    const dialog = await screen.findByRole("alertdialog");
+    await user.click(within(dialog).getByRole("button", { name: /^delete document$/i }));
+
+    expect(await screen.findByText("Only the uploader or an owner/admin can do this.")).toBeInTheDocument();
+  });
+
+  it("disables the confirm button and shows a pending label while Remove file is in flight, so a slow request can't be double-submitted", async () => {
+    let resolveFetch!: (value: unknown) => void;
+    vi.mocked(apiFetch).mockImplementation(() => new Promise((resolve) => { resolveFetch = resolve; }));
+    const user = userEvent.setup();
+    render(<DocumentRowActions job={jobFixture()} />, { wrapper: createQueryWrapper() });
+
+    await user.click(screen.getByRole("button", { name: /open actions menu/i }));
+    await user.click(screen.getByRole("menuitem", { name: /remove file/i }));
+    const dialog = await screen.findByRole("alertdialog");
+    await user.click(within(dialog).getByRole("button", { name: /^remove file$/i }));
+
+    const pendingButton = await within(dialog).findByRole("button", { name: /removing/i });
+    expect(pendingButton).toBeDisabled();
+
+    resolveFetch(jobFixture());
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1));
+  });
 });

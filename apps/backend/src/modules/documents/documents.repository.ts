@@ -9,6 +9,9 @@ export type DocumentJobUpdate = Database["public"]["Tables"]["document_jobs"]["U
 export type FieldCorrectionRow = Database["public"]["Tables"]["document_field_corrections"]["Row"];
 export type FieldCorrectionInsert = Database["public"]["Tables"]["document_field_corrections"]["Insert"];
 
+export type DocumentJobEventRow = Database["public"]["Tables"]["document_job_events"]["Row"];
+export type DocumentJobEventInsert = Database["public"]["Tables"]["document_job_events"]["Insert"];
+
 /**
  * Encodes a `created_at` value into the opaque cursor callers pass back
  * in `GET /documents?cursor=...`. Base64url, not raw ISO text, so the
@@ -236,4 +239,44 @@ export async function insertFieldCorrections(rows: FieldCorrectionInsert[]): Pro
   }
 
   return data;
+}
+
+/**
+ * Appends one row to the lifecycle event log. Callers (documents.service.ts)
+ * are responsible for only ever calling this after the corresponding state
+ * transition has already been committed — this function itself has no
+ * opinion on ordering or atomicity, it just persists a row. See
+ * docs/adr/0011-lifecycle-event-log-and-retry-state.md for the consistency
+ * model this is part of.
+ */
+export async function insertDocumentJobEvent(input: DocumentJobEventInsert): Promise<DocumentJobEventRow> {
+  const { data, error } = await supabaseAdmin.from("document_job_events").insert(input).select("*").single();
+
+  if (error || !data) {
+    console.error("[documents.repository] insertDocumentJobEvent failed", { input, error });
+    throw new AppError(500, "INTERNAL_ERROR", error?.message ?? "Failed to record document job event.");
+  }
+
+  return data;
+}
+
+/**
+ * Full chronological history for one job, oldest first — mirrors
+ * listFieldCorrections' ordering convention. Not exposed via any route in
+ * Wave 2 (no product need yet); exists as an internal read primitive,
+ * mainly so this table's ordering/scoping can actually be tested.
+ */
+export async function listDocumentJobEvents(jobId: string): Promise<DocumentJobEventRow[]> {
+  const { data, error } = await supabaseAdmin
+    .from("document_job_events")
+    .select("*")
+    .eq("document_job_id", jobId)
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    console.error("[documents.repository] listDocumentJobEvents failed", { jobId, error });
+    throw new AppError(500, "INTERNAL_ERROR", error.message);
+  }
+
+  return data ?? [];
 }
