@@ -1,12 +1,49 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { PlanRow, SubscriptionRow } from "@/modules/organization/organization.repository";
 
 vi.mock("@/modules/organization/organization.repository", () => ({
   getJobStatsAggregate: vi.fn(),
   getDailyJobCounts: vi.fn(),
+  getActiveSubscription: vi.fn(),
+  getPlanById: vi.fn(),
+  listPlans: vi.fn(),
+  getMonthlyPagesUsed: vi.fn(),
+  getDocumentsSubmittedSince: vi.fn(),
 }));
 
 const organizationRepository = await import("@/modules/organization/organization.repository");
-const { getJobStats } = await import("@/modules/organization/organization.service");
+const { getJobStats, getEffectivePlan, getUsageSummary, getAllPlans } = await import(
+  "@/modules/organization/organization.service"
+);
+
+function planFixture(overrides: Partial<PlanRow> = {}): PlanRow {
+  return {
+    id: "free",
+    name: "Free",
+    price_monthly: 0,
+    max_documents_per_month: 5,
+    max_pages_per_document: 1,
+    max_pages_per_month: 2,
+    max_file_size_mb: 5,
+    created_at: "2026-01-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function subscriptionFixture(overrides: Partial<SubscriptionRow> = {}): SubscriptionRow {
+  return {
+    id: "sub_1",
+    organization_id: "org_1",
+    plan_id: "basic",
+    status: "active",
+    current_period_start: "2026-01-05T00:00:00.000Z",
+    current_period_end: "2026-02-05T00:00:00.000Z",
+    stripe_customer_id: "cus_1",
+    stripe_subscription_id: "stripe_sub_1",
+    created_at: "2026-01-05T00:00:00.000Z",
+    ...overrides,
+  };
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -108,5 +145,95 @@ describe("getJobStats", () => {
     const result = await getJobStats("org_1");
 
     expect(result.avgProcessingSeconds).toBeNull();
+  });
+});
+
+describe("getEffectivePlan", () => {
+  it("returns the active subscription's plan when one exists", async () => {
+    const subscription = subscriptionFixture({ plan_id: "pro" });
+    vi.mocked(organizationRepository.getActiveSubscription).mockResolvedValue(subscription);
+    vi.mocked(organizationRepository.getPlanById).mockResolvedValue(planFixture({ id: "pro", name: "Pro" }));
+
+    const result = await getEffectivePlan("org_1");
+
+    expect(organizationRepository.getPlanById).toHaveBeenCalledWith("pro");
+    expect(result.plan.id).toBe("pro");
+    expect(result.subscription).toEqual(subscription);
+    expect(result.periodStart).toBe(subscription.current_period_start);
+  });
+
+  it("falls back to the free plan (DEFAULT_PLAN_ID) when there's no active subscription", async () => {
+    vi.mocked(organizationRepository.getActiveSubscription).mockResolvedValue(null);
+    vi.mocked(organizationRepository.getPlanById).mockResolvedValue(planFixture({ id: "free" }));
+
+    const result = await getEffectivePlan("org_1");
+
+    expect(organizationRepository.getPlanById).toHaveBeenCalledWith("free");
+    expect(result.subscription).toBeNull();
+  });
+
+  it("uses the start of the current calendar month as periodStart when there's no active subscription", async () => {
+    vi.mocked(organizationRepository.getActiveSubscription).mockResolvedValue(null);
+    vi.mocked(organizationRepository.getPlanById).mockResolvedValue(planFixture());
+
+    const result = await getEffectivePlan("org_1");
+
+    // "now" is frozen at 2026-01-10T12:00:00.000Z above.
+    expect(result.periodStart).toBe("2026-01-01T00:00:00.000Z");
+  });
+});
+
+describe("getUsageSummary", () => {
+  it("computes pagesRemaining/documentsRemaining against the effective plan's limits", async () => {
+    vi.mocked(organizationRepository.getActiveSubscription).mockResolvedValue(null);
+    vi.mocked(organizationRepository.getPlanById).mockResolvedValue(
+      planFixture({ max_pages_per_month: 100, max_documents_per_month: 10 }),
+    );
+    vi.mocked(organizationRepository.getMonthlyPagesUsed).mockResolvedValue(30);
+    vi.mocked(organizationRepository.getDocumentsSubmittedSince).mockResolvedValue(4);
+
+    const result = await getUsageSummary("org_1");
+
+    expect(result.pagesUsed).toBe(30);
+    expect(result.documentsUsed).toBe(4);
+    expect(result.pagesRemaining).toBe(70);
+    expect(result.documentsRemaining).toBe(6);
+  });
+
+  it("clamps pagesRemaining/documentsRemaining at 0 (never negative) when usage exceeds the plan's limits", async () => {
+    vi.mocked(organizationRepository.getActiveSubscription).mockResolvedValue(null);
+    vi.mocked(organizationRepository.getPlanById).mockResolvedValue(
+      planFixture({ max_pages_per_month: 10, max_documents_per_month: 2 }),
+    );
+    vi.mocked(organizationRepository.getMonthlyPagesUsed).mockResolvedValue(50);
+    vi.mocked(organizationRepository.getDocumentsSubmittedSince).mockResolvedValue(9);
+
+    const result = await getUsageSummary("org_1");
+
+    expect(result.pagesRemaining).toBe(0);
+    expect(result.documentsRemaining).toBe(0);
+  });
+
+  it("passes the effective plan's periodStart through to getDocumentsSubmittedSince", async () => {
+    const subscription = subscriptionFixture({ current_period_start: "2026-01-05T00:00:00.000Z" });
+    vi.mocked(organizationRepository.getActiveSubscription).mockResolvedValue(subscription);
+    vi.mocked(organizationRepository.getPlanById).mockResolvedValue(planFixture());
+    vi.mocked(organizationRepository.getMonthlyPagesUsed).mockResolvedValue(0);
+    vi.mocked(organizationRepository.getDocumentsSubmittedSince).mockResolvedValue(0);
+
+    await getUsageSummary("org_1");
+
+    expect(organizationRepository.getDocumentsSubmittedSince).toHaveBeenCalledWith("org_1", "2026-01-05T00:00:00.000Z");
+  });
+});
+
+describe("getAllPlans", () => {
+  it("delegates to the repository's plan list unchanged", async () => {
+    const plans = [planFixture({ id: "free" }), planFixture({ id: "basic" })];
+    vi.mocked(organizationRepository.listPlans).mockResolvedValue(plans);
+
+    const result = await getAllPlans();
+
+    expect(result).toEqual(plans);
   });
 });

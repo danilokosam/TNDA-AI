@@ -29,6 +29,7 @@ export const billingRoutes = new Elysia({ prefix: "/api/v1/billing" })
       billingService.createCheckoutSession({
         organizationId: auth.organizationId,
         email: auth.email,
+        role: auth.role,
         input: body,
       }),
     { body: checkoutRequestSchema },
@@ -38,6 +39,7 @@ export const billingRoutes = new Elysia({ prefix: "/api/v1/billing" })
     async ({ auth, body }) =>
       billingService.createPortalSession({
         organizationId: auth.organizationId,
+        role: auth.role,
         input: body ?? {},
       }),
     { body: portalRequestSchema.optional() },

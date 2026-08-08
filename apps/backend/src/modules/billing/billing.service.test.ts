@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { env } from "@/config/env";
 import { stripe } from "@/config/stripe";
-import { ValidationError } from "@/utils/errors";
+import { ForbiddenError, ValidationError } from "@/utils/errors";
 import type { SubscriptionRow } from "@/modules/billing/billing.repository";
 
 vi.mock("@/modules/billing/billing.repository", () => ({
@@ -89,6 +89,206 @@ describe("mapStripeStatusToInternal", () => {
 
   it("maps incomplete (and any unrecognized future status) to incomplete", () => {
     expect(billingService.mapStripeStatusToInternal("incomplete")).toBe("incomplete");
+  });
+});
+
+describe("createCheckoutSession", () => {
+  const baseParams = {
+    organizationId: "org_1",
+    email: "owner@example.com",
+    role: "owner" as const,
+    input: { planId: "basic" as const },
+  };
+
+  it("reuses an existing stripe_customer_id and never creates a new Stripe Customer", async () => {
+    vi.mocked(billingRepository.getOrganizationStripeLink).mockResolvedValue({
+      organizationId: "org_1",
+      stripeCustomerId: "cus_existing",
+    });
+    const createCustomer = vi.spyOn(stripe.customers, "create");
+    vi.spyOn(stripe.checkout.sessions, "create").mockResolvedValue({ url: "https://checkout.stripe.com/session_1" } as any);
+
+    await billingService.createCheckoutSession(baseParams);
+
+    expect(createCustomer).not.toHaveBeenCalled();
+    expect(billingRepository.setOrganizationStripeCustomerId).not.toHaveBeenCalled();
+  });
+
+  it("creates and persists a new Stripe Customer when the org has none yet", async () => {
+    vi.mocked(billingRepository.getOrganizationStripeLink).mockResolvedValue({
+      organizationId: "org_1",
+      stripeCustomerId: null,
+    });
+    vi.spyOn(stripe.customers, "create").mockResolvedValue({ id: "cus_new" } as any);
+    vi.spyOn(stripe.checkout.sessions, "create").mockResolvedValue({ url: "https://checkout.stripe.com/session_1" } as any);
+
+    await billingService.createCheckoutSession(baseParams);
+
+    expect(stripe.customers.create).toHaveBeenCalledWith({
+      email: "owner@example.com",
+      metadata: { organization_id: "org_1" },
+    });
+    expect(billingRepository.setOrganizationStripeCustomerId).toHaveBeenCalledWith("org_1", "cus_new");
+  });
+
+  it("creates a subscription-mode session with the correct price, client_reference_id, and metadata", async () => {
+    vi.mocked(billingRepository.getOrganizationStripeLink).mockResolvedValue({
+      organizationId: "org_1",
+      stripeCustomerId: "cus_existing",
+    });
+    const createSession = vi
+      .spyOn(stripe.checkout.sessions, "create")
+      .mockResolvedValue({ url: "https://checkout.stripe.com/session_1" } as any);
+
+    await billingService.createCheckoutSession(baseParams);
+
+    expect(createSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: "subscription",
+        customer: "cus_existing",
+        client_reference_id: "org_1",
+        line_items: [{ price: env.STRIPE_PRICE_ID_BASIC, quantity: 1 }],
+        subscription_data: { metadata: { organization_id: "org_1", plan_id: "basic" } },
+        metadata: { organization_id: "org_1", plan_id: "basic" },
+      }),
+    );
+  });
+
+  it("builds success/cancel URLs from input.redirectUrl when provided", async () => {
+    vi.mocked(billingRepository.getOrganizationStripeLink).mockResolvedValue({
+      organizationId: "org_1",
+      stripeCustomerId: "cus_existing",
+    });
+    const createSession = vi
+      .spyOn(stripe.checkout.sessions, "create")
+      .mockResolvedValue({ url: "https://checkout.stripe.com/session_1" } as any);
+
+    await billingService.createCheckoutSession({
+      ...baseParams,
+      input: { planId: "basic", redirectUrl: "https://app.example.com/billing" },
+    });
+
+    expect(createSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        success_url: "https://app.example.com/billing?checkout=success&session_id={CHECKOUT_SESSION_ID}",
+        cancel_url: "https://app.example.com/billing?checkout=cancelled",
+      }),
+    );
+  });
+
+  it("falls back to env.APP_URL when no redirectUrl is given — never strands the user on the bare API", async () => {
+    vi.mocked(billingRepository.getOrganizationStripeLink).mockResolvedValue({
+      organizationId: "org_1",
+      stripeCustomerId: "cus_existing",
+    });
+    const createSession = vi
+      .spyOn(stripe.checkout.sessions, "create")
+      .mockResolvedValue({ url: "https://checkout.stripe.com/session_1" } as any);
+
+    await billingService.createCheckoutSession(baseParams);
+
+    expect(createSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        success_url: `${env.APP_URL}?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${env.APP_URL}?checkout=cancelled`,
+      }),
+    );
+  });
+
+  it("throws AppError when Stripe returns a session with no url", async () => {
+    vi.mocked(billingRepository.getOrganizationStripeLink).mockResolvedValue({
+      organizationId: "org_1",
+      stripeCustomerId: "cus_existing",
+    });
+    vi.spyOn(stripe.checkout.sessions, "create").mockResolvedValue({ url: null } as any);
+
+    await expect(billingService.createCheckoutSession(baseParams)).rejects.toThrow(
+      "Stripe did not return a checkout URL.",
+    );
+  });
+
+  it("throws ForbiddenError for a plain member, before ever touching the repository", async () => {
+    await expect(billingService.createCheckoutSession({ ...baseParams, role: "member" })).rejects.toThrow(
+      ForbiddenError,
+    );
+    expect(billingRepository.getOrganizationStripeLink).not.toHaveBeenCalled();
+  });
+
+  it("succeeds for an admin, same as an owner", async () => {
+    vi.mocked(billingRepository.getOrganizationStripeLink).mockResolvedValue({
+      organizationId: "org_1",
+      stripeCustomerId: "cus_existing",
+    });
+    vi.spyOn(stripe.checkout.sessions, "create").mockResolvedValue({ url: "https://checkout.stripe.com/session_1" } as any);
+
+    await expect(billingService.createCheckoutSession({ ...baseParams, role: "admin" })).resolves.toEqual({
+      url: "https://checkout.stripe.com/session_1",
+    });
+  });
+});
+
+describe("createPortalSession", () => {
+  it("throws ValidationError when the organization has no billing history yet", async () => {
+    vi.mocked(billingRepository.getOrganizationStripeLink).mockResolvedValue({
+      organizationId: "org_1",
+      stripeCustomerId: null,
+    });
+
+    await expect(
+      billingService.createPortalSession({ organizationId: "org_1", role: "owner", input: {} }),
+    ).rejects.toThrow(ValidationError);
+  });
+
+  it("creates a portal session for the org's existing customer, using input.returnUrl when provided", async () => {
+    vi.mocked(billingRepository.getOrganizationStripeLink).mockResolvedValue({
+      organizationId: "org_1",
+      stripeCustomerId: "cus_existing",
+    });
+    const createPortal = vi
+      .spyOn(stripe.billingPortal.sessions, "create")
+      .mockResolvedValue({ url: "https://billing.stripe.com/session_1" } as any);
+
+    const result = await billingService.createPortalSession({
+      organizationId: "org_1",
+      role: "owner",
+      input: { returnUrl: "https://app.example.com/billing" },
+    });
+
+    expect(createPortal).toHaveBeenCalledWith({ customer: "cus_existing", return_url: "https://app.example.com/billing" });
+    expect(result).toEqual({ url: "https://billing.stripe.com/session_1" });
+  });
+
+  it("falls back to env.APP_URL as the return_url when none is given", async () => {
+    vi.mocked(billingRepository.getOrganizationStripeLink).mockResolvedValue({
+      organizationId: "org_1",
+      stripeCustomerId: "cus_existing",
+    });
+    const createPortal = vi
+      .spyOn(stripe.billingPortal.sessions, "create")
+      .mockResolvedValue({ url: "https://billing.stripe.com/session_1" } as any);
+
+    await billingService.createPortalSession({ organizationId: "org_1", role: "owner", input: {} });
+
+    expect(createPortal).toHaveBeenCalledWith({ customer: "cus_existing", return_url: env.APP_URL });
+  });
+
+  it("throws ForbiddenError for a plain member, before ever touching Stripe or the repository", async () => {
+    await expect(
+      billingService.createPortalSession({ organizationId: "org_1", role: "member", input: {} }),
+    ).rejects.toThrow(ForbiddenError);
+    expect(billingRepository.getOrganizationStripeLink).not.toHaveBeenCalled();
+  });
+
+  it("succeeds for an admin, same as an owner", async () => {
+    vi.mocked(billingRepository.getOrganizationStripeLink).mockResolvedValue({
+      organizationId: "org_1",
+      stripeCustomerId: "cus_existing",
+    });
+    vi.spyOn(stripe.billingPortal.sessions, "create").mockResolvedValue({ url: "https://billing.stripe.com/session_1" } as any);
+
+    await expect(
+      billingService.createPortalSession({ organizationId: "org_1", role: "admin", input: {} }),
+    ).resolves.toEqual({ url: "https://billing.stripe.com/session_1" });
   });
 });
 
