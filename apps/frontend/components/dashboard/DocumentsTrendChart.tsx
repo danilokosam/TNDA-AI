@@ -69,7 +69,10 @@ export function DocumentsTrendChart({ dailyCounts, className }: DocumentsTrendCh
         <CardHeader>
           <CardTitle>Documents processed</CardTitle>
         </CardHeader>
-        <CardContent>
+        <CardContent className="flex min-h-52 flex-col items-center justify-center gap-3 text-center">
+          <div className="flex size-10 items-center justify-center rounded-full bg-muted">
+            <LineChart className="size-5 text-muted-foreground" />
+          </div>
           <p className="text-sm text-muted-foreground">No activity in this window.</p>
         </CardContent>
       </Card>
@@ -175,8 +178,16 @@ export function DocumentsTrendChart({ dailyCounts, className }: DocumentsTrendCh
             <svg ref={svgRef} viewBox={`0 0 ${VIEW_W} ${VIEW_H}`} className="block w-full" style={{ aspectRatio: `${VIEW_W} / ${VIEW_H}` }}>
               {yTicks.map((tick) => (
                 <g key={tick}>
-                  <line x1={MARGIN.left} x2={VIEW_W - MARGIN.right} y1={yAt(tick)} y2={yAt(tick)} stroke="var(--color-border)" strokeWidth={1} />
-                  <text x={MARGIN.left - 8} y={yAt(tick)} textAnchor="end" dominantBaseline="middle" className="fill-muted-foreground text-[10px] [font-variant-numeric:tabular-nums]">
+                  <line
+                    x1={MARGIN.left}
+                    x2={VIEW_W - MARGIN.right}
+                    y1={yAt(tick)}
+                    y2={yAt(tick)}
+                    stroke="var(--color-border)"
+                    strokeWidth={1}
+                    opacity={tick === 0 ? 1 : 0.6}
+                  />
+                  <text x={MARGIN.left - 8} y={yAt(tick)} textAnchor="end" dominantBaseline="middle" className="fill-muted-foreground text-[11px] [font-variant-numeric:tabular-nums]">
                     {tick.toLocaleString()}
                   </text>
                 </g>
@@ -186,7 +197,7 @@ export function DocumentsTrendChart({ dailyCounts, className }: DocumentsTrendCh
                 const point = dailyCounts[index];
                 if (!point) return null;
                 return (
-                  <text key={index} x={xAt(index)} y={VIEW_H - 8} textAnchor="middle" className="fill-muted-foreground text-[10px]">
+                  <text key={index} x={xAt(index)} y={VIEW_H - 8} textAnchor="middle" className="fill-muted-foreground text-[11px]">
                     {formatShortDate(point.date)}
                   </text>
                 );
@@ -233,10 +244,13 @@ export function DocumentsTrendChart({ dailyCounts, className }: DocumentsTrendCh
 
             {activeIndex !== null ? (
               <div
-                className="pointer-events-none absolute top-2 -translate-x-1/2 rounded-md border bg-popover px-2.5 py-1.5 text-popover-foreground shadow-md"
+                className="pointer-events-none absolute top-2 -translate-x-1/2 rounded-lg border bg-popover px-3 py-2 text-popover-foreground shadow-[var(--shadow-card)]"
                 style={{ left: `${Math.min(90, Math.max(10, (xAt(activeIndex) / VIEW_W) * 100))}%` }}
               >
-                <p className="text-sm font-semibold [font-variant-numeric:tabular-nums]">{displayPoint.count.toLocaleString()} documents</p>
+                <p className="flex items-center gap-1.5 text-sm font-semibold [font-variant-numeric:tabular-nums]">
+                  <span className="size-2 rounded-full bg-[var(--color-chart-1)]" aria-hidden="true" />
+                  {displayPoint.count.toLocaleString()} documents
+                </p>
                 <p className="text-xs text-muted-foreground">{formatShortDate(displayPoint.date)}</p>
               </div>
             ) : null}
