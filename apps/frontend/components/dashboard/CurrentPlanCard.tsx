@@ -4,9 +4,10 @@ import { UsageMeter } from "@/components/dashboard/UsageMeter";
 import { formatMonthlyPrice } from "@/lib/format";
 import type { PlanRow, SubscriptionRow, UsageSummary } from "@/types/api";
 
-type SubscriptionStatus = SubscriptionRow["status"];
+export type SubscriptionStatus = SubscriptionRow["status"];
 
-const STATUS_LABELS: Record<SubscriptionStatus, string> = {
+/** Reused by components/billing/CurrentSubscriptionCard.tsx — same status vocabulary, not redefined a third time. */
+export const STATUS_LABELS: Record<SubscriptionStatus, string> = {
   active: "Active",
   trialing: "Trialing",
   past_due: "Past due",
@@ -14,7 +15,7 @@ const STATUS_LABELS: Record<SubscriptionStatus, string> = {
   incomplete: "Incomplete",
 };
 
-const STATUS_VARIANTS: Record<SubscriptionStatus, "default" | "secondary" | "outline" | "destructive"> = {
+export const STATUS_VARIANTS: Record<SubscriptionStatus, "default" | "secondary" | "outline" | "destructive"> = {
   active: "default",
   trialing: "secondary",
   past_due: "outline",

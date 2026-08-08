@@ -1,19 +1,30 @@
+import { Suspense } from "react";
 import type { Metadata } from "next";
-import { CreditCard } from "lucide-react";
 import { PageHeader } from "@/components/common/PageHeader";
-import { EmptyState } from "@/components/common/EmptyState";
+import { BillingWorkspace } from "@/components/billing/BillingWorkspace";
+import { getCurrentUser } from "@/services/auth.service";
 
 export const metadata: Metadata = { title: "Billing" };
 
-export default function BillingPage() {
+/**
+ * Fetches `role` server-side and passes it down as a prop — same rationale
+ * as `DashboardLayout`'s own doc comment: nothing here needs a client-side
+ * refetch of the current user yet, and there's no `/api/auth/me` BFF route
+ * to fetch it from on the client anyway.
+ *
+ * `BillingWorkspace` reads `?checkout=success|cancelled` via
+ * `useSearchParams()`, which Next.js requires a `<Suspense>` boundary
+ * around (otherwise the route can't be statically prerendered).
+ */
+export default async function BillingPage() {
+  const { role } = await getCurrentUser();
+
   return (
     <>
       <PageHeader title="Billing" description="Plan, usage, and subscription management." />
-      <EmptyState
-        icon={CreditCard}
-        title="Billing is coming soon"
-        description="Plan comparison, upgrade flow, and the billing portal will live here."
-      />
+      <Suspense fallback={null}>
+        <BillingWorkspace role={role} />
+      </Suspense>
     </>
   );
 }
