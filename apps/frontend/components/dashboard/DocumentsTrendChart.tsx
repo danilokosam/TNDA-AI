@@ -28,9 +28,20 @@ function niceStep(roughStep: number): number {
   return niceNormalized * magnitude;
 }
 
-/** Clean, round y-axis ticks from 0 up to (at least) `maxValue` — never raw/jagged numbers. */
-function computeYAxis(maxValue: number, targetTicks = 4): { ticks: number[]; max: number } {
-  const step = niceStep(maxValue / targetTicks);
+/**
+ * Clean, round y-axis ticks from 0 up to (at least) `maxValue` — never
+ * raw/jagged numbers. Document counts are always non-negative integers, so
+ * the step is clamped to a minimum of 1 before being "niced": without this,
+ * a small `maxValue` (e.g. 2) produces a rough step under 1 (0.5), and each
+ * tick is displayed rounded to the nearest whole document — two distinct
+ * fractional steps (0.5 and 1.0, or 1.5 and 2.0) then round to the *same*
+ * integer, producing duplicate ticks (`[0, 1, 1, 2, 2]`) with duplicate
+ * React keys and, worse, a genuinely confusing axis showing "1" twice.
+ * Clamping the step to >= 1 (niceStep's output is always a whole number
+ * once its input is >= 1) makes every tick unique by construction.
+ */
+export function computeYAxis(maxValue: number, targetTicks = 4): { ticks: number[]; max: number } {
+  const step = niceStep(Math.max(1, maxValue / targetTicks));
   const ticks: number[] = [];
   for (let value = 0; value <= maxValue + step * 0.001; value += step) {
     ticks.push(Math.round(value));

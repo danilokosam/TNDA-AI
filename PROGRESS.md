@@ -413,6 +413,10 @@ Evidence, not assumption: no worker process was running anywhere in the dev envi
 
 **Tests**: none added — every implicated behavior already has direct, passing coverage; nothing to protect that isn't already protected. **Verification**: full monorepo `typecheck`/`lint`/`test` clean (backend 347/347, frontend 346/346, both unchanged). `git status` empty throughout. **Left open, pending a decision, not silently fixed**: how (or whether) to make the separate-worker requirement more discoverable for local development — options range from a documentation-only note up to wiring the worker into the dev fan-out, the latter reversing a deliberate prior decision and requiring explicit sign-off first.
 
+### 3.29 `DocumentsTrendChart` — fixed a duplicate React-key regression (2026-08-08)
+
+Detailed in `apps/frontend/PROGRESS.md` §21. A reported React "duplicate key" console error, reproduced and root-caused exactly: `computeYAxis`'s tick-rounding could collapse two distinct fractional step positions onto the same displayed integer whenever `maxValue` was small (e.g. `2` → `[0, 1, 1, 2, 2]`) — a real bug, not a legitimate "duplicates are valid" case, since an axis showing the same integer twice for two different gridlines is genuinely wrong, not just a key-uniqueness technicality. Fixed at the root by clamping the axis step to a minimum of `1` before rounding (document counts are always integers, so a sub-1 step should never have been possible) — `key={tick}` was kept as-is, not switched to array index, since ticks are now unique by construction and remain the more meaningful identity for the list. 10 new tests (TDD, confirmed failing against the exact reported symptom first). Full monorepo `typecheck`/`lint`/`test` clean — frontend 356/356 (up from 346). Manual verification against two real accounts with genuinely small document counts (the previously-broken `maxValue=1` case included) confirmed clean, unique axis labels and zero console errors, on both the Dashboard and the exact `/documents/:id` page pattern originally reported.
+
 ---
 
 ## 4. Architectural Decisions (what, and why)
