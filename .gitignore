@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+USERS.md
 
 # --- Dependencies & Caches ---
 node_modules/
