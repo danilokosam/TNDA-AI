@@ -1,8 +1,9 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiFetch } from "@/lib/api/http";
-import { buildDocumentsListPath } from "@/features/documents/query";
+import { apiFetch, apiFetchFile } from "@/lib/api/http";
+import { buildDocumentsExportPath, buildDocumentsListPath } from "@/features/documents/query";
+import type { DocumentsFilters } from "@/features/documents/filters";
 import {
   deleteDocumentResponseSchema,
   documentsListResponseSchema,
@@ -52,6 +53,24 @@ export function useDeleteDocument() {
     onSuccess: (_result, jobId) => {
       queryClient.invalidateQueries({ queryKey: ["job-status", jobId] });
       queryClient.invalidateQueries({ queryKey: ["documents-list"] });
+    },
+  });
+}
+
+/**
+ * Filter-scoped CSV export. Resolves to the downloaded Blob plus a file
+ * name parsed from the response's Content-Disposition header (falling back
+ * to a sensible default if that header is ever missing) — the caller
+ * (DocumentsExportButton) triggers the actual browser download.
+ */
+export function useExportDocuments() {
+  return useMutation({
+    mutationFn: async (filters: DocumentsFilters): Promise<{ blob: Blob; fileName: string }> => {
+      const response = await apiFetchFile(buildDocumentsExportPath(filters));
+      const blob = await response.blob();
+      const disposition = response.headers.get("Content-Disposition") ?? "";
+      const match = /filename="([^"]+)"/.exec(disposition);
+      return { blob, fileName: match?.[1] ?? "documents-export.csv" };
     },
   });
 }

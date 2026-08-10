@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildDocumentsListPath } from "@/features/documents/query";
+import { buildDocumentsExportPath, buildDocumentsListPath } from "@/features/documents/query";
 
 describe("buildDocumentsListPath", () => {
   it("returns the bare path with no query string for empty params", () => {
@@ -36,5 +36,23 @@ describe("buildDocumentsListPath", () => {
   it("URL-encodes special characters in a search term", () => {
     const path = buildDocumentsListPath({ search: "acme & co" });
     expect(path).toBe("/api/documents?search=acme+%26+co");
+  });
+});
+
+describe("buildDocumentsExportPath", () => {
+  it("returns the base path with no query string when no filters are set", () => {
+    expect(buildDocumentsExportPath({})).toBe("/api/documents/export");
+  });
+
+  it("includes documentType, search, dateFrom, and dateTo when present", () => {
+    expect(
+      buildDocumentsExportPath({ documentType: "invoice", search: "acme", dateFrom: "2026-01-01", dateTo: "2026-01-31" }),
+    ).toBe("/api/documents/export?documentType=invoice&search=acme&dateFrom=2026-01-01&dateTo=2026-01-31");
+  });
+
+  it("never forwards status, even when present on the filters object", () => {
+    const path = buildDocumentsExportPath({ status: "completed", documentType: "invoice" });
+    expect(path).not.toContain("status");
+    expect(path).toBe("/api/documents/export?documentType=invoice");
   });
 });

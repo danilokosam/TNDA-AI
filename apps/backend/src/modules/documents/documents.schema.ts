@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { DOCUMENT_TYPES } from "@/modules/documents/documents.strategy";
+import { EXPORT_FORMATS } from "@/modules/documents/documents.export.serializer";
 import type { DocumentJobStatus } from "@/config/database.types";
 
 /**
@@ -59,3 +60,21 @@ export const listDocumentsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
 });
 export type ListDocumentsQuery = z.infer<typeof listDocumentsQuerySchema>;
+
+/**
+ * `GET /documents/export` query params. Deliberately narrower than
+ * `listDocumentsQuerySchema`: no `status` (export is always `completed`-only
+ * — see documents.service.ts#exportDocuments), and no `cursor`/`limit` (the
+ * export ceiling is an internal constant, not a client-controlled page
+ * size). `format` is required and only ever `"csv"` today — the enum grows
+ * when a future serializer is registered, nothing else about this schema
+ * changes.
+ */
+export const exportDocumentsQuerySchema = z.object({
+  format: z.enum(EXPORT_FORMATS),
+  documentType: z.enum(DOCUMENT_TYPES).optional(),
+  search: z.string().trim().min(1).max(200).optional(),
+  dateFrom: z.string().datetime().optional(),
+  dateTo: z.string().datetime().optional(),
+});
+export type ExportDocumentsQuery = z.infer<typeof exportDocumentsQuerySchema>;

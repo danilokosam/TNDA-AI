@@ -1,7 +1,7 @@
 import "server-only";
 import type { z } from "zod";
 import { env } from "@/lib/env";
-import { parseApiResponse } from "@/lib/api/response";
+import { parseApiFileResponse, parseApiResponse } from "@/lib/api/response";
 
 interface BackendFetchOptions extends RequestInit {
   accessToken?: string;
@@ -30,4 +30,18 @@ export async function backendFetch<T>(path: string, schema: z.ZodType<T>, option
   });
 
   return parseApiResponse(response, schema);
+}
+
+/** Same request-building as backendFetch, but for a non-JSON (file) response — see parseApiFileResponse. Always a GET with no body, so no Content-Type/FormData handling is needed. */
+export async function backendFetchFile(path: string, options?: BackendFetchOptions): Promise<Response> {
+  const { accessToken, headers } = options ?? {};
+
+  const response = await fetch(`${env.BACKEND_URL}${path}`, {
+    headers: {
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      ...headers,
+    },
+  });
+
+  return parseApiFileResponse(response);
 }

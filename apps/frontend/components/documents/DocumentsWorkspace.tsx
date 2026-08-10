@@ -3,6 +3,7 @@
 import { useReducer, useState } from "react";
 import Link from "next/link";
 import { FileClock } from "lucide-react";
+import { DocumentsExportButton } from "@/components/documents/DocumentsExportButton";
 import { DocumentsFilterBar } from "@/components/documents/DocumentsFilterBar";
 import { DocumentsTable } from "@/components/documents/DocumentsTable";
 import { DocumentsPagination } from "@/components/documents/DocumentsPagination";
@@ -49,12 +50,15 @@ export function DocumentsWorkspace() {
 
   return (
     <div className="space-y-4">
-      <DocumentsFilterBar
-        key={filterBarKey}
-        filters={state.filters}
-        onFilterChange={handleFilterChange}
-        onReset={handleReset}
-      />
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <DocumentsFilterBar
+          key={filterBarKey}
+          filters={state.filters}
+          onFilterChange={handleFilterChange}
+          onReset={handleReset}
+        />
+        <DocumentsExportButton filters={state.filters} />
+      </div>
 
       {isLoading ? (
         <div className="space-y-2">

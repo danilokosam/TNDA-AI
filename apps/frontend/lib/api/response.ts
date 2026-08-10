@@ -2,9 +2,8 @@ import type { z } from "zod";
 import { apiErrorBodySchema, type AppErrorCode } from "@/types/api";
 
 /**
- * Thrown by both `apiFetch` (client, same-origin) and `backendFetch`
- * (server, real backend) — one shape, regardless of which side of the BFF
- * boundary the failing call was on.
+ * Thrown by every API call this app makes, on either side of the BFF
+ * boundary or for a non-JSON (file) response alike.
  */
 export class ApiError extends Error {
   readonly status: number;
@@ -20,28 +19,33 @@ export class ApiError extends Error {
   }
 }
 
+/** Shared by parseApiResponse and parseApiFileResponse — turns a non-OK Response into a typed ApiError from its {error:{...}} envelope, or a generic ApiError if the body isn't in that shape. */
+async function toApiError(response: Response): Promise<ApiError> {
+  const body: unknown = await response.json().catch(() => null);
+  const parsedError = apiErrorBodySchema.safeParse(body);
+
+  if (parsedError.success) {
+    return new ApiError(
+      response.status,
+      parsedError.data.error.code,
+      parsedError.data.error.message,
+      parsedError.data.error.details,
+    );
+  }
+
+  return new ApiError(response.status, "UNKNOWN_ERROR", `Request failed with status ${response.status}.`);
+}
+
 /**
- * Shared response-handling for every API call this app makes, in either
- * direction: on failure, parses the uniform `{error:{code,message,details?}}`
- * envelope into an `ApiError`; on success, parses the body through the
- * caller's Zod schema so a shape mismatch is caught here, at the boundary,
- * not wherever the caller happens to first touch the data.
+ * Shared response-handling for every JSON API call this app makes, in
+ * either direction: on failure, throws via `toApiError`; on success, parses
+ * the body through the caller's Zod schema so a shape mismatch is caught
+ * here, at the boundary, not wherever the caller happens to first touch
+ * the data.
  */
 export async function parseApiResponse<T>(response: Response, schema: z.ZodType<T>): Promise<T> {
   if (!response.ok) {
-    const body: unknown = await response.json().catch(() => null);
-    const parsedError = apiErrorBodySchema.safeParse(body);
-
-    if (parsedError.success) {
-      throw new ApiError(
-        response.status,
-        parsedError.data.error.code,
-        parsedError.data.error.message,
-        parsedError.data.error.details,
-      );
-    }
-
-    throw new ApiError(response.status, "UNKNOWN_ERROR", `Request failed with status ${response.status}.`);
+    throw await toApiError(response);
   }
 
   const body: unknown = await response.json();
@@ -54,4 +58,18 @@ export async function parseApiResponse<T>(response: Response, schema: z.ZodType<
   }
 
   return parsed.data;
+}
+
+/**
+ * For endpoints that return a non-JSON body (e.g. a generated CSV
+ * download) — parses the same {error:{...}} envelope on failure as
+ * `parseApiResponse`, but returns the raw `Response` on success so the
+ * caller can read it as a blob/text/stream itself, since there's no Zod
+ * schema for a file body to parse through.
+ */
+export async function parseApiFileResponse(response: Response): Promise<Response> {
+  if (!response.ok) {
+    throw await toApiError(response);
+  }
+  return response;
 }

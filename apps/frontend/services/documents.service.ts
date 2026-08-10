@@ -1,5 +1,5 @@
 import "server-only";
-import { backendFetch } from "@/lib/api/backend-client";
+import { backendFetch, backendFetchFile } from "@/lib/api/backend-client";
 import { getAccessToken } from "@/lib/supabase/server-client";
 import {
   deleteDocumentResponseSchema,
@@ -11,6 +11,7 @@ import {
   type DeleteDocumentResponse,
   type DocumentCorrectionsRequest,
   type DocumentsListResponse,
+  type ExportDocumentsParams,
   type FieldCorrectionsResponse,
   type JobDto,
   type ListDocumentsParams,
@@ -129,6 +130,26 @@ export async function deleteDocument(jobId: string): Promise<DeleteDocumentRespo
   const accessToken = await getAccessToken();
   return backendFetch(`/api/v1/documents/jobs/${encodeURIComponent(jobId)}`, deleteDocumentResponseSchema, {
     method: "DELETE",
+    accessToken: accessToken ?? undefined,
+  });
+}
+
+/**
+ * Filter-scoped CSV export. Always completed-documents-only — see
+ * documents.service.ts#exportDocuments on the backend; `status` is
+ * deliberately not a parameter here. Returns the raw Response so the
+ * caller (the export Route Handler) can stream the file straight through
+ * rather than buffering it into a parsed JSON shape.
+ */
+export async function exportDocuments(params: ExportDocumentsParams): Promise<Response> {
+  const accessToken = await getAccessToken();
+  const search = new URLSearchParams({ format: "csv" });
+  if (params.documentType) search.set("documentType", params.documentType);
+  if (params.search) search.set("search", params.search);
+  if (params.dateFrom) search.set("dateFrom", params.dateFrom);
+  if (params.dateTo) search.set("dateTo", params.dateTo);
+
+  return backendFetchFile(`/api/v1/documents/export?${search.toString()}`, {
     accessToken: accessToken ?? undefined,
   });
 }

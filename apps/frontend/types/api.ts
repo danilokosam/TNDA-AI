@@ -264,6 +264,20 @@ export interface ListDocumentsParams {
   limit?: number;
 }
 
+/**
+ * `GET /documents/export` request shape (`documents.schema.ts#exportDocumentsQuerySchema`
+ * on the backend, minus `format` — the frontend always requests `"csv"`,
+ * the only format Phase 1 supports). Same convention as `ListDocumentsParams`:
+ * an outgoing shape the frontend constructs itself, not Zod-validated here;
+ * the backend re-validates independently on receipt regardless.
+ */
+export interface ExportDocumentsParams {
+  documentType?: DocumentType;
+  search?: string;
+  dateFrom?: string;
+  dateTo?: string;
+}
+
 /** `GET /documents` response shape (`documents.routes.ts`'s `{data, pagination}`). */
 export const documentsListResponseSchema = z.object({
   data: z.array(jobDtoSchema),

@@ -1,4 +1,5 @@
 import type { ListDocumentsParams } from "@/types/api";
+import type { DocumentsFilters } from "@/features/documents/filters";
 
 /**
  * Client-side counterpart to `documents.service.ts`'s own (server-only,
@@ -19,4 +20,23 @@ export function buildDocumentsListPath(params: ListDocumentsParams): string {
 
   const queryString = search.toString();
   return `/api/documents${queryString ? `?${queryString}` : ""}`;
+}
+
+/**
+ * Client-side query builder for the CSV export BFF route
+ * (`app/api/documents/export/route.ts`). Deliberately omits `status`: the
+ * backend export endpoint always restricts to `completed` documents (see
+ * documents.service.ts#exportDocuments), so forwarding whatever status the
+ * list view happens to be filtered to would misrepresent what gets
+ * exported.
+ */
+export function buildDocumentsExportPath(filters: DocumentsFilters): string {
+  const search = new URLSearchParams();
+  if (filters.documentType) search.set("documentType", filters.documentType);
+  if (filters.search) search.set("search", filters.search);
+  if (filters.dateFrom) search.set("dateFrom", filters.dateFrom);
+  if (filters.dateTo) search.set("dateTo", filters.dateTo);
+
+  const queryString = search.toString();
+  return `/api/documents/export${queryString ? `?${queryString}` : ""}`;
 }

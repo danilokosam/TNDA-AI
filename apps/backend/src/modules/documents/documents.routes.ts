@@ -4,6 +4,7 @@ import * as documentsService from "@/modules/documents/documents.service";
 import type { DocumentJobRow, FieldCorrectionRow } from "@/modules/documents/documents.repository";
 import {
   documentCorrectionsSchema,
+  exportDocumentsQuerySchema,
   jobIdParamSchema,
   listDocumentsQuerySchema,
   uploadDocumentSchema,
@@ -72,6 +73,26 @@ export const documentsRoutes = new Elysia({ prefix: "/api/v1/documents" })
       };
     },
     { query: listDocumentsQuerySchema },
+  )
+  .get(
+    "/export",
+    async ({ auth, query }) => {
+      const result = await documentsService.exportDocuments(auth.organizationId, query);
+      // A raw Response, not `set.headers` + a returned string — Elysia
+      // appends its own default `text/plain` Content-Type to a plain
+      // string return regardless of `set.headers` (confirmed empirically:
+      // a string return produced `Content-Type: text/csv; charset=utf-8,
+      // text/plain`, a comma-joined double value). Returning a real
+      // Response bypasses Elysia's own response construction entirely, so
+      // these headers are the only ones that reach the client.
+      return new Response(result.content, {
+        headers: {
+          "Content-Type": result.contentType,
+          "Content-Disposition": `attachment; filename="${result.fileName}"`,
+        },
+      });
+    },
+    { query: exportDocumentsQuerySchema },
   )
   .get(
     "/jobs/:id",

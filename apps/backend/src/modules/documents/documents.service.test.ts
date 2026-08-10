@@ -23,6 +23,7 @@ vi.mock("@/modules/documents/documents.repository", () => ({
   updateDocumentJobIfEpochMatches: vi.fn(),
   getDocumentJobForOrganization: vi.fn(),
   getDocumentJobForOrganizationIncludingDeleted: vi.fn(),
+  listDocumentJobsForOrganization: vi.fn(),
   listFieldCorrections: vi.fn(),
   insertFieldCorrections: vi.fn(),
   insertDocumentJobEvent: vi.fn(),
@@ -61,6 +62,7 @@ const {
   isRetryExhausted,
   submitClaimedJobForProcessing,
   checkClaimedJobProgress,
+  exportDocuments,
 } = await import("@/modules/documents/documents.service");
 
 function planFixture() {
@@ -1147,5 +1149,97 @@ describe("checkClaimedJobProgress (Wave 3 Phase 2 — worker-driven poll)", () =
 
     expect(result).toBeNull();
     expect(documentsRepository.insertDocumentJobEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe("exportDocuments", () => {
+  it("filters to completed jobs only and returns a CSV built from the matched jobs", async () => {
+    vi.mocked(documentsRepository.listDocumentJobsForOrganization).mockResolvedValue({
+      jobs: [
+        jobFixture({
+          id: "job_1",
+          status: "completed",
+          result_json: { documents: [{ fields: { VendorName: { content: "Acme" } } }] },
+        }),
+      ],
+      nextCursor: null,
+    } as never);
+    vi.mocked(documentsRepository.listFieldCorrections).mockResolvedValue([]);
+
+    const result = await exportDocuments("org_1", { format: "csv" } as never);
+
+    expect(documentsRepository.listDocumentJobsForOrganization).toHaveBeenCalledWith("org_1", {
+      status: "completed",
+      documentType: undefined,
+      search: undefined,
+      dateFrom: undefined,
+      dateTo: undefined,
+      limit: 5000,
+    });
+    expect(result.contentType).toBe("text/csv; charset=utf-8");
+    expect(result.fileName).toMatch(/^documents-export-\d{4}-\d{2}-\d{2}\.csv$/);
+    expect(result.content).toContain("Acme");
+  });
+
+  it("applies effective (corrected) values from the field-correction history, not Azure's original", async () => {
+    vi.mocked(documentsRepository.listDocumentJobsForOrganization).mockResolvedValue({
+      jobs: [
+        jobFixture({ id: "job_1", result_json: { documents: [{ fields: { VendorName: { content: "Acme" } } }] } }),
+      ],
+      nextCursor: null,
+    } as never);
+    vi.mocked(documentsRepository.listFieldCorrections).mockResolvedValue([
+      {
+        id: "c1",
+        document_job_id: "job_1",
+        field_name: "VendorName",
+        previous_value: "Acme",
+        new_value: "Acme Corporation",
+        edited_by: "user_1",
+        edited_at: "2026-01-16T00:00:00.000Z",
+      },
+    ] as never);
+
+    const result = await exportDocuments("org_1", { format: "csv" } as never);
+
+    expect(result.content).toContain("Acme Corporation");
+    expect(result.content).not.toContain(",Acme,");
+  });
+
+  it("throws PayloadTooLargeError without generating a CSV when more documents match than the row ceiling", async () => {
+    vi.mocked(documentsRepository.listDocumentJobsForOrganization).mockResolvedValue({
+      jobs: [jobFixture()],
+      nextCursor: "some-cursor",
+    } as never);
+
+    await expect(exportDocuments("org_1", { format: "csv" } as never)).rejects.toMatchObject({
+      statusCode: 413,
+      code: "PAYLOAD_TOO_LARGE",
+    });
+    expect(documentsRepository.listFieldCorrections).not.toHaveBeenCalled();
+  });
+
+  it("forwards documentType/search/date filters to the repository, never a status override", async () => {
+    vi.mocked(documentsRepository.listDocumentJobsForOrganization).mockResolvedValue({
+      jobs: [],
+      nextCursor: null,
+    } as never);
+
+    await exportDocuments("org_1", {
+      format: "csv",
+      documentType: "receipt",
+      search: "acme",
+      dateFrom: "2026-01-01T00:00:00.000Z",
+      dateTo: "2026-01-31T00:00:00.000Z",
+    } as never);
+
+    expect(documentsRepository.listDocumentJobsForOrganization).toHaveBeenCalledWith("org_1", {
+      status: "completed",
+      documentType: "receipt",
+      search: "acme",
+      dateFrom: "2026-01-01T00:00:00.000Z",
+      dateTo: "2026-01-31T00:00:00.000Z",
+      limit: 5000,
+    });
   });
 });

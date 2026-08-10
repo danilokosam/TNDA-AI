@@ -546,3 +546,61 @@ describe("DELETE /api/v1/documents/jobs/:id", () => {
     expect(documentsRepository.updateDocumentJob).not.toHaveBeenCalled();
   });
 });
+
+describe("GET /api/v1/documents/export", () => {
+  it("returns 401 without a bearer token", async () => {
+    const response = await app.handle(new Request("http://localhost/api/v1/documents/export?format=csv"));
+    expect(response.status).toBe(401);
+  });
+
+  it("returns 400 when format is missing or unsupported", async () => {
+    mockAuthenticated();
+    const response = await app.handle(
+      new Request("http://localhost/api/v1/documents/export?format=xlsx", { headers: AUTH_HEADERS }),
+    );
+    expect(response.status).toBe(400);
+  });
+
+  it("returns a CSV with the expected content-type and attachment disposition, scoped to the caller's organization", async () => {
+    mockAuthenticated();
+    vi.mocked(documentsRepository.listDocumentJobsForOrganization).mockImplementation(async (organizationId) => ({
+      jobs:
+        organizationId === "org_1"
+          ? [jobRow({ id: "job_1", result_json: { documents: [{ fields: { VendorName: { content: "Acme" } } }] } })]
+          : [],
+      nextCursor: null,
+    }));
+    vi.mocked(documentsRepository.listFieldCorrections).mockResolvedValue([]);
+
+    const response = await app.handle(
+      new Request("http://localhost/api/v1/documents/export?format=csv", { headers: AUTH_HEADERS }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toBe("text/csv; charset=utf-8");
+    expect(response.headers.get("Content-Disposition")).toContain("attachment");
+    expect(documentsRepository.listDocumentJobsForOrganization).toHaveBeenCalledWith(
+      "org_1",
+      expect.objectContaining({ status: "completed" }),
+    );
+
+    const body = await response.text();
+    expect(body).toContain("Acme");
+  });
+
+  it("returns 413 PAYLOAD_TOO_LARGE when the matched set exceeds the export row ceiling", async () => {
+    mockAuthenticated();
+    vi.mocked(documentsRepository.listDocumentJobsForOrganization).mockResolvedValue({
+      jobs: [jobRow()],
+      nextCursor: "some-cursor",
+    });
+
+    const response = await app.handle(
+      new Request("http://localhost/api/v1/documents/export?format=csv", { headers: AUTH_HEADERS }),
+    );
+
+    expect(response.status).toBe(413);
+    const body = errorEnvelopeSchema.parse(await response.json());
+    expect(body.error.code).toBe("PAYLOAD_TOO_LARGE");
+  });
+});

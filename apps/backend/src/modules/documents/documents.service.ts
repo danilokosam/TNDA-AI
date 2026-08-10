@@ -12,6 +12,9 @@ import {
   uploadDocumentFile,
 } from "@/services/storage.service";
 import { getProcessingStrategy, type DocumentType } from "@/modules/documents/documents.strategy";
+import { buildExportRecord, type ExportRecord } from "@/modules/documents/documents.export.mapper";
+import { getExportSerializer } from "@/modules/documents/documents.export.serializer";
+import type { ExportDocumentsQuery } from "@/modules/documents/documents.schema";
 import { getEffectivePlan } from "@/modules/organization/organization.service";
 import { getDocumentsSubmittedSince, getMonthlyPagesUsed, type PlanRow } from "@/modules/organization/organization.repository";
 import type { DocumentJobEventType, ProfileRole } from "@/config/database.types";
@@ -645,6 +648,69 @@ export async function listDocuments(
   filters: ListDocumentJobsFilters,
 ): Promise<ListDocumentJobsResult> {
   return listDocumentJobsForOrganization(organizationId, filters);
+}
+
+// Policy constant, not a deployment knob — same category as this file's
+// RETRY_* constants above. Keeps export synchronous and bounded: even the
+// Pro plan's 1000-documents/month ceiling means this comfortably covers
+// several years of a single org's completed-document history. If real
+// usage ever proves this too small, that's the trigger to build an async
+// export job — not a reason to raise this number indefinitely (see
+// docs/adr/0014-document-csv-export.md).
+const EXPORT_MAX_ROWS = 5000;
+
+export interface ExportDocumentsResult {
+  content: string;
+  contentType: string;
+  fileName: string;
+}
+
+/**
+ * Filter-scoped export (Phase 1: CSV only). Always restricted to
+ * `completed` jobs — an export represents validated, available data, never
+ * a placeholder for something still processing or one that failed
+ * (`ExportDocumentsQuery` has no `status` field at all, so there's no way
+ * for a caller to override this). Reuses `reduceToEffectiveFields` — the
+ * exact same effective-field reduction `getFieldCorrections` uses for the
+ * review UI — so an export always reflects whatever a reviewer currently
+ * sees, never Azure's raw, uncorrected output. Synchronous and bounded by
+ * EXPORT_MAX_ROWS: throws PayloadTooLargeError rather than silently
+ * truncating when a filter set resolves to more rows than that ceiling.
+ */
+export async function exportDocuments(
+  organizationId: string,
+  query: ExportDocumentsQuery,
+): Promise<ExportDocumentsResult> {
+  const serializer = getExportSerializer(query.format);
+
+  const result = await listDocumentJobsForOrganization(organizationId, {
+    status: "completed",
+    documentType: query.documentType,
+    search: query.search,
+    dateFrom: query.dateFrom,
+    dateTo: query.dateTo,
+    limit: EXPORT_MAX_ROWS,
+  });
+
+  if (result.nextCursor !== null) {
+    throw new PayloadTooLargeError(
+      `This export matches more than ${EXPORT_MAX_ROWS} documents. Narrow your filters (date range, document type, or search) and try again.`,
+      { maxRows: EXPORT_MAX_ROWS },
+    );
+  }
+
+  const records: ExportRecord[] = await Promise.all(
+    result.jobs.map(async (job) => {
+      const history = await listFieldCorrections(job.id);
+      const effective = reduceToEffectiveFields(history);
+      return buildExportRecord(job, effective);
+    }),
+  );
+
+  const content = serializer.serialize(records);
+  const fileName = `documents-export-${new Date().toISOString().slice(0, 10)}.${serializer.fileExtension}`;
+
+  return { content, contentType: serializer.contentType, fileName };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

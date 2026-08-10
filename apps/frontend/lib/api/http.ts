@@ -1,5 +1,5 @@
 import type { z } from "zod";
-import { parseApiResponse } from "@/lib/api/response";
+import { parseApiFileResponse, parseApiResponse } from "@/lib/api/response";
 
 /**
  * Client-safe same-origin fetch wrapper — the only thing `features/*`
@@ -19,4 +19,10 @@ export async function apiFetch<T>(path: string, schema: z.ZodType<T>, init?: Req
   });
 
   return parseApiResponse(response, schema);
+}
+
+/** Same-origin fetch for a non-JSON (file download) response — see parseApiFileResponse. The only thing features/* hooks are allowed to call directly for this, mirroring apiFetch's own role for JSON calls. */
+export async function apiFetchFile(path: string): Promise<Response> {
+  const response = await fetch(path);
+  return parseApiFileResponse(response);
 }
