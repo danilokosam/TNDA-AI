@@ -265,17 +265,35 @@ export interface ListDocumentsParams {
 }
 
 /**
- * `GET /documents/export` request shape (`documents.schema.ts#exportDocumentsQuerySchema`
- * on the backend, minus `format` — the frontend always requests `"csv"`,
- * the only format Phase 1 supports). Same convention as `ListDocumentsParams`:
- * an outgoing shape the frontend constructs itself, not Zod-validated here;
- * the backend re-validates independently on receipt regardless.
+ * Mirrors the backend's `documents.export.serializer.ts#EXPORT_FORMATS` by
+ * hand (same hand-duplication call as `DOCUMENT_JOB_STATUSES` elsewhere in
+ * this codebase — `@tnda-ai/shared` stays empty by design; see ADR 0014).
+ */
+export const EXPORT_FORMATS = ["csv", "json", "xml", "xlsx"] as const;
+export type ExportFormat = (typeof EXPORT_FORMATS)[number];
+
+/** One requested output column — mirrors the backend's `ExportColumnSpec` (documents.export.configuration.ts). */
+export interface ExportColumnSpec {
+  field: string;
+  label?: string;
+}
+
+/**
+ * Request shape for both the GET (unconfigured, default) and POST
+ * (configured) export endpoints (`documents.schema.ts#exportDocumentsQuerySchema`
+ * / `exportDocumentsBodySchema` on the backend). Same convention as
+ * `ListDocumentsParams`: an outgoing shape the frontend constructs itself,
+ * not Zod-validated here; the backend re-validates independently on
+ * receipt regardless. `fieldSelection` is only ever sent on the POST path —
+ * see `services/documents.service.ts#exportDocuments`.
  */
 export interface ExportDocumentsParams {
+  format: ExportFormat;
   documentType?: DocumentType;
   search?: string;
   dateFrom?: string;
   dateTo?: string;
+  fieldSelection?: ExportColumnSpec[];
 }
 
 /** `GET /documents` response shape (`documents.routes.ts`'s `{data, pagination}`). */

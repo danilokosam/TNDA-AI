@@ -13,8 +13,9 @@ import {
 } from "@/services/storage.service";
 import { getProcessingStrategy, type DocumentType } from "@/modules/documents/documents.strategy";
 import { buildExportRecord, type ExportRecord } from "@/modules/documents/documents.export.mapper";
+import { buildExportTable } from "@/modules/documents/documents.export.configuration";
 import { getExportSerializer } from "@/modules/documents/documents.export.serializer";
-import type { ExportDocumentsQuery } from "@/modules/documents/documents.schema";
+import type { ExportDocumentsBody } from "@/modules/documents/documents.schema";
 import { getEffectivePlan } from "@/modules/organization/organization.service";
 import { getDocumentsSubmittedSince, getMonthlyPagesUsed, type PlanRow } from "@/modules/organization/organization.repository";
 import type { DocumentJobEventType, ProfileRole } from "@/config/database.types";
@@ -660,26 +661,35 @@ export async function listDocuments(
 const EXPORT_MAX_ROWS = 5000;
 
 export interface ExportDocumentsResult {
-  content: string;
+  content: string | Buffer;
   contentType: string;
   fileName: string;
 }
 
 /**
- * Filter-scoped export (Phase 1: CSV only). Always restricted to
- * `completed` jobs — an export represents validated, available data, never
- * a placeholder for something still processing or one that failed
- * (`ExportDocumentsQuery` has no `status` field at all, so there's no way
- * for a caller to override this). Reuses `reduceToEffectiveFields` — the
- * exact same effective-field reduction `getFieldCorrections` uses for the
- * review UI — so an export always reflects whatever a reviewer currently
- * sees, never Azure's raw, uncorrected output. Synchronous and bounded by
+ * Filter-scoped export, always restricted to `completed` jobs — an export
+ * represents validated, available data, never a placeholder for something
+ * still processing or one that failed (neither `ExportDocumentsQuery` nor
+ * `ExportDocumentsBody` has a `status` field, so there's no way for a
+ * caller to override this). Reuses `reduceToEffectiveFields` — the exact
+ * same effective-field reduction `getFieldCorrections` uses for the review
+ * UI — so an export always reflects whatever a reviewer currently sees,
+ * never Azure's raw, uncorrected output. Synchronous and bounded by
  * EXPORT_MAX_ROWS: throws PayloadTooLargeError rather than silently
- * truncating when a filter set resolves to more rows than that ceiling.
+ * truncating when a filter set resolves to more rows than that ceiling
+ * (one shared ceiling across every format — benchmarked XLSX, the most
+ * expensive format to produce, at 5,000 rows/15 columns: ~300ms, a
+ * fraction-of-a-megabyte buffer, well inside a synchronous request budget;
+ * see docs/adr/0015-configurable-export-formats.md).
+ *
+ * `query.fieldSelection`, present only on the POST/`ExportDocumentsBody`
+ * path, is forwarded to `buildExportTable` unchanged; omitted (the GET
+ * path always omits it) reproduces the original, pre-configuration default
+ * export exactly.
  */
 export async function exportDocuments(
   organizationId: string,
-  query: ExportDocumentsQuery,
+  query: ExportDocumentsBody,
 ): Promise<ExportDocumentsResult> {
   const serializer = getExportSerializer(query.format);
 
@@ -707,7 +717,8 @@ export async function exportDocuments(
     }),
   );
 
-  const content = serializer.serialize(records);
+  const table = buildExportTable(records, query.fieldSelection ? { fieldSelection: query.fieldSelection } : undefined);
+  const content = await serializer.serialize(table);
   const fileName = `documents-export-${new Date().toISOString().slice(0, 10)}.${serializer.fileExtension}`;
 
   return { content, contentType: serializer.contentType, fileName };

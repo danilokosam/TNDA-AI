@@ -11,6 +11,7 @@ import { EmptyState } from "@/components/common/EmptyState";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { useDocumentsList } from "@/features/documents/hooks";
+import { deriveAvailableExportColumns } from "@/features/documents/export-columns";
 import {
   currentCursor,
   documentsListReducer,
@@ -57,7 +58,7 @@ export function DocumentsWorkspace() {
           onFilterChange={handleFilterChange}
           onReset={handleReset}
         />
-        <DocumentsExportButton filters={state.filters} />
+        <DocumentsExportButton filters={state.filters} availableColumns={deriveAvailableExportColumns(data?.data ?? [])} />
       </div>
 
       {isLoading ? (

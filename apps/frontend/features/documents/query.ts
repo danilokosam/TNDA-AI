@@ -1,4 +1,4 @@
-import type { ListDocumentsParams } from "@/types/api";
+import type { ExportFormat, ListDocumentsParams } from "@/types/api";
 import type { DocumentsFilters } from "@/features/documents/filters";
 
 /**
@@ -23,20 +23,22 @@ export function buildDocumentsListPath(params: ListDocumentsParams): string {
 }
 
 /**
- * Client-side query builder for the CSV export BFF route
- * (`app/api/documents/export/route.ts`). Deliberately omits `status`: the
- * backend export endpoint always restricts to `completed` documents (see
- * documents.service.ts#exportDocuments), so forwarding whatever status the
- * list view happens to be filtered to would misrepresent what gets
- * exported.
+ * Client-side query builder for the default (unconfigured) export BFF
+ * route (`app/api/documents/export/route.ts`'s `GET`). Deliberately omits
+ * `status`: the backend export endpoint always restricts to `completed`
+ * documents (see documents.service.ts#exportDocuments), so forwarding
+ * whatever status the list view happens to be filtered to would
+ * misrepresent what gets exported. Configured exports (column
+ * selection/ordering/renaming) go through the same route's `POST` instead,
+ * with a JSON body — see `services/documents.service.ts#exportDocuments` —
+ * since a query string is a poor fit for that shape.
  */
-export function buildDocumentsExportPath(filters: DocumentsFilters): string {
-  const search = new URLSearchParams();
+export function buildDocumentsExportPath(filters: DocumentsFilters, format: ExportFormat): string {
+  const search = new URLSearchParams({ format });
   if (filters.documentType) search.set("documentType", filters.documentType);
   if (filters.search) search.set("search", filters.search);
   if (filters.dateFrom) search.set("dateFrom", filters.dateFrom);
   if (filters.dateTo) search.set("dateTo", filters.dateTo);
 
-  const queryString = search.toString();
-  return `/api/documents/export${queryString ? `?${queryString}` : ""}`;
+  return `/api/documents/export?${search.toString()}`;
 }

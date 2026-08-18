@@ -62,13 +62,17 @@ export const listDocumentsQuerySchema = z.object({
 export type ListDocumentsQuery = z.infer<typeof listDocumentsQuerySchema>;
 
 /**
- * `GET /documents/export` query params. Deliberately narrower than
- * `listDocumentsQuerySchema`: no `status` (export is always `completed`-only
- * — see documents.service.ts#exportDocuments), and no `cursor`/`limit` (the
+ * `GET /documents/export` query params — the default, unconfigured export.
+ * Deliberately narrower than `listDocumentsQuerySchema`: no `status`
+ * (export is always `completed`-only — see
+ * documents.service.ts#exportDocuments), and no `cursor`/`limit` (the
  * export ceiling is an internal constant, not a client-controlled page
- * size). `format` is required and only ever `"csv"` today — the enum grows
- * when a future serializer is registered, nothing else about this schema
- * changes.
+ * size). `format` is required; the enum grows when a future serializer is
+ * registered, nothing else about this schema changes. Kept free of
+ * `fieldSelection` on purpose: a GET query string is a poor fit for an
+ * ordered array of `{field, label}` objects, and every existing/default
+ * caller of this endpoint must keep working unchanged — see
+ * `exportDocumentsBodySchema` for the configured-export POST variant.
  */
 export const exportDocumentsQuerySchema = z.object({
   format: z.enum(EXPORT_FORMATS),
@@ -78,3 +82,26 @@ export const exportDocumentsQuerySchema = z.object({
   dateTo: z.string().datetime().optional(),
 });
 export type ExportDocumentsQuery = z.infer<typeof exportDocumentsQuerySchema>;
+
+const exportColumnSpecSchema = z.object({
+  field: z.string().trim().min(1).max(200),
+  label: z.string().trim().min(1).max(200).optional(),
+});
+
+/**
+ * `POST /documents/export` body — same filters as the GET export, plus an
+ * optional `fieldSelection` (column selection, ordering, and renaming; see
+ * documents.export.configuration.ts#buildExportTable). Omitting
+ * `fieldSelection` reproduces the exact same default export as the GET
+ * endpoint. Duplicate `field` entries are a semantic (not a shape)
+ * violation, so they're rejected by `buildExportTable` itself, not here.
+ */
+export const exportDocumentsBodySchema = z.object({
+  format: z.enum(EXPORT_FORMATS),
+  documentType: z.enum(DOCUMENT_TYPES).optional(),
+  search: z.string().trim().min(1).max(200).optional(),
+  dateFrom: z.string().datetime().optional(),
+  dateTo: z.string().datetime().optional(),
+  fieldSelection: z.array(exportColumnSpecSchema).min(1).max(100).optional(),
+});
+export type ExportDocumentsBody = z.infer<typeof exportDocumentsBodySchema>;

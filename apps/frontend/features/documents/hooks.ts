@@ -9,6 +9,8 @@ import {
   documentsListResponseSchema,
   jobDtoSchema,
   type DeleteDocumentResponse,
+  type ExportColumnSpec,
+  type ExportFormat,
   type JobDto,
   type ListDocumentsParams,
 } from "@/types/api";
@@ -57,20 +59,39 @@ export function useDeleteDocument() {
   });
 }
 
+export interface ExportDocumentsMutationInput {
+  filters: DocumentsFilters;
+  format: ExportFormat;
+  /** Column selection/ordering/renaming — present only from the "Customize columns" dialog. Switches the request to POST (see services/documents.service.ts#exportDocuments on the backend). */
+  fieldSelection?: ExportColumnSpec[];
+}
+
 /**
- * Filter-scoped CSV export. Resolves to the downloaded Blob plus a file
- * name parsed from the response's Content-Disposition header (falling back
- * to a sensible default if that header is ever missing) — the caller
+ * Filter-scoped export in the caller's chosen format — the default,
+ * unconfigured shape when `fieldSelection` is omitted (GET), or a
+ * column-selected/ordered/renamed export when it's present (POST).
+ * Resolves to the downloaded Blob plus a file name parsed from the
+ * response's Content-Disposition header (falling back to a sensible
+ * default if that header is ever missing) — the caller
  * (DocumentsExportButton) triggers the actual browser download.
  */
 export function useExportDocuments() {
   return useMutation({
-    mutationFn: async (filters: DocumentsFilters): Promise<{ blob: Blob; fileName: string }> => {
-      const response = await apiFetchFile(buildDocumentsExportPath(filters));
+    mutationFn: async ({
+      filters,
+      format,
+      fieldSelection,
+    }: ExportDocumentsMutationInput): Promise<{ blob: Blob; fileName: string }> => {
+      const response = fieldSelection
+        ? await apiFetchFile("/api/documents/export", {
+            method: "POST",
+            body: JSON.stringify({ format, fieldSelection, ...filters }),
+          })
+        : await apiFetchFile(buildDocumentsExportPath(filters, format));
       const blob = await response.blob();
       const disposition = response.headers.get("Content-Disposition") ?? "";
       const match = /filename="([^"]+)"/.exec(disposition);
-      return { blob, fileName: match?.[1] ?? "documents-export.csv" };
+      return { blob, fileName: match?.[1] ?? `documents-export.${format}` };
     },
   });
 }

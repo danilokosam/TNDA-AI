@@ -32,12 +32,19 @@ export async function backendFetch<T>(path: string, schema: z.ZodType<T>, option
   return parseApiResponse(response, schema);
 }
 
-/** Same request-building as backendFetch, but for a non-JSON (file) response — see parseApiFileResponse. Always a GET with no body, so no Content-Type/FormData handling is needed. */
+/**
+ * Same request-building as backendFetch, but for a non-JSON (file)
+ * response — see parseApiFileResponse. Defaults to a bodyless GET (the
+ * default/unconfigured export); a configured export passes
+ * `{method: "POST", body: JSON.stringify(...)}` through `rest`.
+ */
 export async function backendFetchFile(path: string, options?: BackendFetchOptions): Promise<Response> {
-  const { accessToken, headers } = options ?? {};
+  const { accessToken, headers, ...rest } = options ?? {};
 
   const response = await fetch(`${env.BACKEND_URL}${path}`, {
+    ...rest,
     headers: {
+      ...(rest.body ? { "Content-Type": "application/json" } : {}),
       ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
       ...headers,
     },

@@ -40,19 +40,22 @@ describe("buildDocumentsListPath", () => {
 });
 
 describe("buildDocumentsExportPath", () => {
-  it("returns the base path with no query string when no filters are set", () => {
-    expect(buildDocumentsExportPath({})).toBe("/api/documents/export");
+  it("returns just the format param when no other filters are set", () => {
+    expect(buildDocumentsExportPath({}, "csv")).toBe("/api/documents/export?format=csv");
   });
 
-  it("includes documentType, search, dateFrom, and dateTo when present", () => {
+  it("includes format, documentType, search, dateFrom, and dateTo when present", () => {
     expect(
-      buildDocumentsExportPath({ documentType: "invoice", search: "acme", dateFrom: "2026-01-01", dateTo: "2026-01-31" }),
-    ).toBe("/api/documents/export?documentType=invoice&search=acme&dateFrom=2026-01-01&dateTo=2026-01-31");
+      buildDocumentsExportPath(
+        { documentType: "invoice", search: "acme", dateFrom: "2026-01-01", dateTo: "2026-01-31" },
+        "xlsx",
+      ),
+    ).toBe("/api/documents/export?format=xlsx&documentType=invoice&search=acme&dateFrom=2026-01-01&dateTo=2026-01-31");
   });
 
   it("never forwards status, even when present on the filters object", () => {
-    const path = buildDocumentsExportPath({ status: "completed", documentType: "invoice" });
+    const path = buildDocumentsExportPath({ status: "completed", documentType: "invoice" }, "csv");
     expect(path).not.toContain("status");
-    expect(path).toBe("/api/documents/export?documentType=invoice");
+    expect(path).toBe("/api/documents/export?format=csv&documentType=invoice");
   });
 });

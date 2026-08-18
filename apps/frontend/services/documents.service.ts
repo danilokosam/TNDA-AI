@@ -135,15 +135,31 @@ export async function deleteDocument(jobId: string): Promise<DeleteDocumentRespo
 }
 
 /**
- * Filter-scoped CSV export. Always completed-documents-only — see
+ * Filter-scoped export. Always completed-documents-only — see
  * documents.service.ts#exportDocuments on the backend; `status` is
  * deliberately not a parameter here. Returns the raw Response so the
  * caller (the export Route Handler) can stream the file straight through
  * rather than buffering it into a parsed JSON shape.
+ *
+ * Uses GET for the default/unconfigured export (`params.fieldSelection`
+ * omitted) and POST — with the full params as a JSON body — once column
+ * selection/ordering/renaming is requested, mirroring the backend's own
+ * GET/POST split (documents.schema.ts#exportDocumentsQuerySchema /
+ * exportDocumentsBodySchema): a query string is a poor fit for an ordered
+ * array of `{field, label}` objects.
  */
 export async function exportDocuments(params: ExportDocumentsParams): Promise<Response> {
   const accessToken = await getAccessToken();
-  const search = new URLSearchParams({ format: "csv" });
+
+  if (params.fieldSelection) {
+    return backendFetchFile("/api/v1/documents/export", {
+      method: "POST",
+      body: JSON.stringify(params),
+      accessToken: accessToken ?? undefined,
+    });
+  }
+
+  const search = new URLSearchParams({ format: params.format });
   if (params.documentType) search.set("documentType", params.documentType);
   if (params.search) search.set("search", params.search);
   if (params.dateFrom) search.set("dateFrom", params.dateFrom);

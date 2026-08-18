@@ -4,6 +4,7 @@ import * as documentsService from "@/modules/documents/documents.service";
 import type { DocumentJobRow, FieldCorrectionRow } from "@/modules/documents/documents.repository";
 import {
   documentCorrectionsSchema,
+  exportDocumentsBodySchema,
   exportDocumentsQuerySchema,
   jobIdParamSchema,
   listDocumentsQuerySchema,
@@ -93,6 +94,22 @@ export const documentsRoutes = new Elysia({ prefix: "/api/v1/documents" })
       });
     },
     { query: exportDocumentsQuerySchema },
+  )
+  .post(
+    "/export",
+    async ({ auth, body }) => {
+      const result = await documentsService.exportDocuments(auth.organizationId, body);
+      // Same raw-Response reasoning as the GET handler above — the only
+      // difference is `body.fieldSelection`, which `exportDocuments`
+      // already treats as an optional pass-through to `buildExportTable`.
+      return new Response(result.content, {
+        headers: {
+          "Content-Type": result.contentType,
+          "Content-Disposition": `attachment; filename="${result.fileName}"`,
+        },
+      });
+    },
+    { body: exportDocumentsBodySchema },
   )
   .get(
     "/jobs/:id",

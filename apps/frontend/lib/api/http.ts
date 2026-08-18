@@ -21,8 +21,20 @@ export async function apiFetch<T>(path: string, schema: z.ZodType<T>, init?: Req
   return parseApiResponse(response, schema);
 }
 
-/** Same-origin fetch for a non-JSON (file download) response — see parseApiFileResponse. The only thing features/* hooks are allowed to call directly for this, mirroring apiFetch's own role for JSON calls. */
-export async function apiFetchFile(path: string): Promise<Response> {
-  const response = await fetch(path);
+/**
+ * Same-origin fetch for a non-JSON (file download) response — see
+ * parseApiFileResponse. The only thing features/* hooks are allowed to
+ * call directly for this, mirroring apiFetch's own role for JSON calls.
+ * `init` defaults to a plain GET (the default/unconfigured export); a
+ * configured export passes `{method: "POST", body: JSON.stringify(...)}`.
+ */
+export async function apiFetchFile(path: string, init?: RequestInit): Promise<Response> {
+  const response = await fetch(path, {
+    ...init,
+    headers: {
+      ...(init?.body ? { "Content-Type": "application/json" } : {}),
+      ...init?.headers,
+    },
+  });
   return parseApiFileResponse(response);
 }

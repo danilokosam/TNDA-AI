@@ -556,7 +556,7 @@ describe("GET /api/v1/documents/export", () => {
   it("returns 400 when format is missing or unsupported", async () => {
     mockAuthenticated();
     const response = await app.handle(
-      new Request("http://localhost/api/v1/documents/export?format=xlsx", { headers: AUTH_HEADERS }),
+      new Request("http://localhost/api/v1/documents/export?format=pdf", { headers: AUTH_HEADERS }),
     );
     expect(response.status).toBe(400);
   });
@@ -602,5 +602,169 @@ describe("GET /api/v1/documents/export", () => {
     expect(response.status).toBe(413);
     const body = errorEnvelopeSchema.parse(await response.json());
     expect(body.error.code).toBe("PAYLOAD_TOO_LARGE");
+  });
+
+  it("returns a JSON array with the expected content-type for format=json", async () => {
+    mockAuthenticated();
+    vi.mocked(documentsRepository.listDocumentJobsForOrganization).mockResolvedValue({
+      jobs: [jobRow({ id: "job_1", result_json: { documents: [{ fields: { VendorName: { content: "Acme" } } }] } })],
+      nextCursor: null,
+    });
+    vi.mocked(documentsRepository.listFieldCorrections).mockResolvedValue([]);
+
+    const response = await app.handle(
+      new Request("http://localhost/api/v1/documents/export?format=json", { headers: AUTH_HEADERS }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toBe("application/json; charset=utf-8");
+    const body = await response.json();
+    expect(body).toEqual(expect.arrayContaining([expect.objectContaining({ VendorName: "Acme" })]));
+  });
+
+  it("returns a well-formed XML document with the expected content-type for format=xml", async () => {
+    mockAuthenticated();
+    vi.mocked(documentsRepository.listDocumentJobsForOrganization).mockResolvedValue({
+      jobs: [jobRow({ id: "job_1", result_json: { documents: [{ fields: { VendorName: { content: "Acme" } } }] } })],
+      nextCursor: null,
+    });
+    vi.mocked(documentsRepository.listFieldCorrections).mockResolvedValue([]);
+
+    const response = await app.handle(
+      new Request("http://localhost/api/v1/documents/export?format=xml", { headers: AUTH_HEADERS }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toBe("application/xml; charset=utf-8");
+    const body = await response.text();
+    expect(body).toContain("<VendorName>Acme</VendorName>");
+  });
+
+  it("returns a binary XLSX workbook with the expected content-type for format=xlsx", async () => {
+    mockAuthenticated();
+    vi.mocked(documentsRepository.listDocumentJobsForOrganization).mockResolvedValue({
+      jobs: [jobRow({ id: "job_1", result_json: { documents: [{ fields: { VendorName: { content: "Acme" } } }] } })],
+      nextCursor: null,
+    });
+    vi.mocked(documentsRepository.listFieldCorrections).mockResolvedValue([]);
+
+    const response = await app.handle(
+      new Request("http://localhost/api/v1/documents/export?format=xlsx", { headers: AUTH_HEADERS }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toBe(
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+    expect(response.headers.get("Content-Disposition")).toContain(".xlsx");
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    expect(bytes.length).toBeGreaterThan(0);
+    // XLSX files are zip archives - "PK" magic bytes confirm a real binary payload, not text.
+    expect(bytes[0]).toBe(0x50);
+    expect(bytes[1]).toBe(0x4b);
+  });
+});
+
+describe("POST /api/v1/documents/export", () => {
+  it("returns 401 without a bearer token", async () => {
+    const response = await app.handle(
+      new Request("http://localhost/api/v1/documents/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ format: "csv" }),
+      }),
+    );
+    expect(response.status).toBe(401);
+  });
+
+  it("applies the requested field selection, ordering, and renaming to the exported columns", async () => {
+    mockAuthenticated();
+    vi.mocked(documentsRepository.listDocumentJobsForOrganization).mockResolvedValue({
+      jobs: [
+        jobRow({
+          id: "job_1",
+          result_json: { documents: [{ fields: { VendorName: { content: "Acme" }, InvoiceTotal: { value: 199.99 } } }] },
+        }),
+      ],
+      nextCursor: null,
+    });
+    vi.mocked(documentsRepository.listFieldCorrections).mockResolvedValue([]);
+
+    const response = await app.handle(
+      new Request("http://localhost/api/v1/documents/export", {
+        method: "POST",
+        headers: { ...AUTH_HEADERS, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          format: "csv",
+          fieldSelection: [
+            { field: "InvoiceTotal", label: "Total" },
+            { field: "VendorName", label: "Supplier" },
+          ],
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    const lines = body.replace("﻿", "").split("\r\n");
+    expect(lines[0]).toBe("Total,Supplier");
+    expect(lines[1]).toBe("199.99,Acme");
+  });
+
+  it("returns 400 when fieldSelection contains a duplicate field", async () => {
+    mockAuthenticated();
+    vi.mocked(documentsRepository.listDocumentJobsForOrganization).mockResolvedValue({
+      jobs: [jobRow()],
+      nextCursor: null,
+    });
+    vi.mocked(documentsRepository.listFieldCorrections).mockResolvedValue([]);
+
+    const response = await app.handle(
+      new Request("http://localhost/api/v1/documents/export", {
+        method: "POST",
+        headers: { ...AUTH_HEADERS, "Content-Type": "application/json" },
+        body: JSON.stringify({ format: "csv", fieldSelection: [{ field: "jobId" }, { field: "jobId" }] }),
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    const body = errorEnvelopeSchema.parse(await response.json());
+    expect(body.error.code).toBe("VALIDATION_ERROR");
+  });
+
+  it("returns 413 PAYLOAD_TOO_LARGE when the matched set exceeds the export row ceiling", async () => {
+    mockAuthenticated();
+    vi.mocked(documentsRepository.listDocumentJobsForOrganization).mockResolvedValue({
+      jobs: [jobRow()],
+      nextCursor: "some-cursor",
+    });
+
+    const response = await app.handle(
+      new Request("http://localhost/api/v1/documents/export", {
+        method: "POST",
+        headers: { ...AUTH_HEADERS, "Content-Type": "application/json" },
+        body: JSON.stringify({ format: "csv" }),
+      }),
+    );
+
+    expect(response.status).toBe(413);
+  });
+
+  it("scopes the export to the caller's own organization", async () => {
+    mockAuthenticated();
+    vi.mocked(documentsRepository.listDocumentJobsForOrganization).mockResolvedValue({ jobs: [], nextCursor: null });
+
+    await app.handle(
+      new Request("http://localhost/api/v1/documents/export", {
+        method: "POST",
+        headers: { ...AUTH_HEADERS, "Content-Type": "application/json" },
+        body: JSON.stringify({ format: "csv" }),
+      }),
+    );
+
+    expect(documentsRepository.listDocumentJobsForOrganization).toHaveBeenCalledWith(
+      "org_1",
+      expect.objectContaining({ status: "completed" }),
+    );
   });
 });

@@ -14,12 +14,13 @@ import {
 
 vi.mock("@/lib/api/backend-client", () => ({
   backendFetch: vi.fn(),
+  backendFetchFile: vi.fn(),
 }));
 vi.mock("@/lib/supabase/server-client", () => ({
   getAccessToken: vi.fn(),
 }));
 
-const { backendFetch } = await import("@/lib/api/backend-client");
+const { backendFetch, backendFetchFile } = await import("@/lib/api/backend-client");
 const { getAccessToken } = await import("@/lib/supabase/server-client");
 const {
   uploadDocument,
@@ -32,6 +33,7 @@ const {
   rejectDocumentReview,
   removeDocumentFile,
   deleteDocument,
+  exportDocuments,
 } = await import("@/services/documents.service");
 
 function jobDtoFixture(overrides: Partial<JobDto> = {}): JobDto {
@@ -322,5 +324,40 @@ describe("deleteDocument", () => {
     expect(path).toBe("/api/v1/documents/jobs/job_42");
     expect(schema).toBe(deleteDocumentResponseSchema);
     expect(options?.method).toBe("DELETE");
+  });
+});
+
+describe("exportDocuments", () => {
+  it("GETs the export endpoint with a format and filter query string when no fieldSelection is given", async () => {
+    const fakeResponse = new Response("csv content");
+    vi.mocked(backendFetchFile).mockResolvedValue(fakeResponse);
+
+    const returned = await exportDocuments({ format: "csv", documentType: "invoice", search: "acme" });
+
+    expect(returned).toBe(fakeResponse);
+    const [path, options] = vi.mocked(backendFetchFile).mock.calls[0]!;
+    expect(path).toBe("/api/v1/documents/export?format=csv&documentType=invoice&search=acme");
+    expect(options?.method).toBeUndefined();
+    expect(options?.body).toBeUndefined();
+    expect(options?.accessToken).toBe("test-access-token");
+  });
+
+  it("POSTs a JSON body to the export endpoint when fieldSelection is given", async () => {
+    const fakeResponse = new Response("csv content");
+    vi.mocked(backendFetchFile).mockResolvedValue(fakeResponse);
+
+    const params = {
+      format: "csv" as const,
+      documentType: "invoice" as const,
+      fieldSelection: [{ field: "VendorName", label: "Supplier" }],
+    };
+    const returned = await exportDocuments(params);
+
+    expect(returned).toBe(fakeResponse);
+    const [path, options] = vi.mocked(backendFetchFile).mock.calls[0]!;
+    expect(path).toBe("/api/v1/documents/export");
+    expect(options?.method).toBe("POST");
+    expect(JSON.parse(options?.body as string)).toEqual(params);
+    expect(options?.accessToken).toBe("test-access-token");
   });
 });
