@@ -226,7 +226,7 @@ sequenceDiagram
     API-->>BFF: 202 {jobId, status:"processing", ...}
     BFF-->>C: same response
     C->>Q: dispatch upload-succeeded
-    Q-->>U: item status reflects job status; polling begins
+    Q-->>U: item status reflects job status, polling begins
 ```
 
 `useUploadController` processes queued items **sequentially, never concurrently** (§6) — a second queued file does not begin uploading until the first has resolved. A `.zip` batch is a single multipart upload that the backend expands server-side; the frontend never uploads archive members individually.
