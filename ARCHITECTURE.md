@@ -2,7 +2,7 @@
 
 > **Purpose of this document**: this is the canonical technical reference for TNDA-AI's architecture — what the system is, how its pieces fit together, and why it's built the way it is. It documents the architecture **as it exists today**. For the fuller Context/Decision/Consequences record behind a specific significant decision, see [`docs/adr/`](./docs/adr/). For a chronological record of how it got here (decisions, bugs found and fixed, verification performed, session-by-session progress), see [`PROGRESS.md`](./PROGRESS.md) (root, project-level) and [`apps/backend/PROGRESS.md`](./apps/backend/PROGRESS.md) / [`apps/frontend/PROGRESS.md`](./apps/frontend/PROGRESS.md) (app-level detail). This document is the distilled, current-state counterpart to that log — read this first to understand the system; read an ADR to understand one decision in depth; read `PROGRESS.md` to understand how a specific piece came to be.
 >
-> Last written against the repository at commit `eb49f63` (Frontend Stage 4 — Results, just completed; Stages 5-7 — History, Billing UI, Settings — not yet built).
+> Last written against the repository at commit `295ef72`. All planned frontend stages are built: Shell + Auth, Dashboard, Upload + Processing, Results (full document review workflow), History, Billing UI, and Settings (Settings is intentionally read-only — no backend support yet for self-service edits). Most recent major addition: configurable, multi-format (CSV/XLSX/JSON/XML) document export (2026-08-18, `docs/adr/0015-configurable-export-formats.md`).
 
 ---
 

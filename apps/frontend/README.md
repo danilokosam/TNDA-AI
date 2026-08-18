@@ -6,7 +6,7 @@
 
 This README documents the frontend only. See [`../backend/README.md`](../backend/README.md) for the API this app consumes, and the root [`ARCHITECTURE.md`](../../ARCHITECTURE.md) for the full, current, cross-app architecture reference.
 
-Status: Shell + Auth, Dashboard, Upload + Processing, Document History, and Results (including the full document review workflow — edit/correct fields, confirm/reject, remove file, delete document) are built, tested, and verified. The Billing UI (upgrade/manage a plan) and Settings are not started yet. See [`PROGRESS.md`](./PROGRESS.md) for the dated build log.
+Status: all planned stages are built, tested, and verified — Shell + Auth, Dashboard, Upload + Processing, Results (including the full document review workflow — edit/correct fields, confirm/reject, remove file, delete document), Document History (including multi-format CSV/XLSX/JSON/XML export with configurable column selection/ordering/renaming), the Billing UI (upgrade/manage a plan via Stripe Checkout and the Billing Portal), and Settings (intentionally read-only — no backend support yet for self-service edits). See [`PROGRESS.md`](./PROGRESS.md) for the dated build log.
 
 ---
 
