@@ -60,7 +60,7 @@ export function CurrentSubscriptionCard({
           </Button>
           {!canManageBilling ? (
             <p className="text-sm text-muted-foreground">
-              Only organization owners and admins can manage billing.
+              Only the organization owner can manage billing.
             </p>
           ) : null}
         </CardFooter>

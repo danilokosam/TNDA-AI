@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { zipSync } from "fflate";
-import { AzureServiceError } from "@/utils/errors";
+import { AzureServiceError, ForbiddenError } from "@/utils/errors";
 
 // documents.service.ts's upload path predates this project's test suite
 // and had remained largely untested (quota math, zip batching) — this file
@@ -337,7 +337,7 @@ describe("getFieldCorrections", () => {
       correctionRow({ field_name: "Total", new_value: "$55.00", edited_at: "2026-01-15T00:00:00.000Z" }),
     ] as never);
 
-    const result = await getFieldCorrections("org_1", "job_1");
+    const result = await getFieldCorrections("org_1", "job_1", "reviewer");
 
     expect(documentsRepository.getDocumentJobForOrganization).toHaveBeenCalledWith("job_1", "org_1");
     expect(result.effective).toEqual({ VendorName: "ACME Corporation", Total: "$55.00" });
@@ -348,7 +348,7 @@ describe("getFieldCorrections", () => {
     vi.mocked(documentsRepository.getDocumentJobForOrganization).mockResolvedValue(completedJobWithFields as never);
     vi.mocked(documentsRepository.listFieldCorrections).mockResolvedValue([]);
 
-    const result = await getFieldCorrections("org_1", "job_1");
+    const result = await getFieldCorrections("org_1", "job_1", "reviewer");
 
     expect(result.effective).toEqual({});
     expect(result.history).toEqual([]);
@@ -361,7 +361,7 @@ describe("saveFieldCorrections", () => {
       jobFixture({ status: "processing" }) as never,
     );
 
-    await expect(saveFieldCorrections("org_1", "job_1", "user_1", { VendorName: "Acme Corporation" })).rejects.toThrow();
+    await expect(saveFieldCorrections("org_1", "job_1", "user_1", "reviewer", { VendorName: "Acme Corporation" })).rejects.toThrow();
     expect(documentsRepository.insertFieldCorrections).not.toHaveBeenCalled();
   });
 
@@ -369,7 +369,7 @@ describe("saveFieldCorrections", () => {
     vi.mocked(documentsRepository.getDocumentJobForOrganization).mockResolvedValue(completedJobWithFields as never);
     vi.mocked(documentsRepository.listFieldCorrections).mockResolvedValue([]);
 
-    await saveFieldCorrections("org_1", "job_1", "user_1", { VendorName: "Acme Corporation" });
+    await saveFieldCorrections("org_1", "job_1", "user_1", "reviewer", { VendorName: "Acme Corporation" });
 
     expect(documentsRepository.insertFieldCorrections).toHaveBeenCalledWith([
       { document_job_id: "job_1", field_name: "VendorName", previous_value: "Acme Corp", new_value: "Acme Corporation", edited_by: "user_1" },
@@ -382,7 +382,7 @@ describe("saveFieldCorrections", () => {
       correctionRow({ field_name: "VendorName", previous_value: "Acme Corp", new_value: "Acme Corporation" }),
     ] as never);
 
-    await saveFieldCorrections("org_1", "job_1", "user_1", { VendorName: "ACME Corporation" });
+    await saveFieldCorrections("org_1", "job_1", "user_1", "reviewer", { VendorName: "ACME Corporation" });
 
     expect(documentsRepository.insertFieldCorrections).toHaveBeenCalledWith([
       { document_job_id: "job_1", field_name: "VendorName", previous_value: "Acme Corporation", new_value: "ACME Corporation", edited_by: "user_1" },
@@ -393,7 +393,7 @@ describe("saveFieldCorrections", () => {
     vi.mocked(documentsRepository.getDocumentJobForOrganization).mockResolvedValue(completedJobWithFields as never);
     vi.mocked(documentsRepository.listFieldCorrections).mockResolvedValue([]);
 
-    await saveFieldCorrections("org_1", "job_1", "user_1", { VendorName: "Acme Corp" });
+    await saveFieldCorrections("org_1", "job_1", "user_1", "reviewer", { VendorName: "Acme Corp" });
 
     expect(documentsRepository.insertFieldCorrections).not.toHaveBeenCalled();
   });
@@ -404,7 +404,7 @@ describe("saveFieldCorrections", () => {
     );
     vi.mocked(documentsRepository.listFieldCorrections).mockResolvedValue([]);
 
-    await saveFieldCorrections("org_1", "job_1", "user_1", { VendorName: "Acme Corporation" });
+    await saveFieldCorrections("org_1", "job_1", "user_1", "reviewer", { VendorName: "Acme Corporation" });
 
     expect(documentsRepository.updateDocumentJob).toHaveBeenCalledWith("job_1", {
       review_status: "unreviewed",
@@ -417,7 +417,7 @@ describe("saveFieldCorrections", () => {
     vi.mocked(documentsRepository.getDocumentJobForOrganization).mockResolvedValue(completedJobWithFields as never);
     vi.mocked(documentsRepository.listFieldCorrections).mockResolvedValue([]);
 
-    await saveFieldCorrections("org_1", "job_1", "user_1", { VendorName: "Acme Corporation" });
+    await saveFieldCorrections("org_1", "job_1", "user_1", "reviewer", { VendorName: "Acme Corporation" });
 
     expect(documentsRepository.updateDocumentJob).not.toHaveBeenCalled();
   });
@@ -429,13 +429,13 @@ describe("confirmDocumentReview", () => {
       jobFixture({ status: "pending" }) as never,
     );
 
-    await expect(confirmDocumentReview("org_1", "job_1", "user_1")).rejects.toThrow();
+    await expect(confirmDocumentReview("org_1", "job_1", "user_1", "reviewer")).rejects.toThrow();
   });
 
   it("sets review_status/reviewed_by/reviewed_at without touching corrections when none are given", async () => {
     vi.mocked(documentsRepository.getDocumentJobForOrganization).mockResolvedValue(completedJobWithFields as never);
 
-    await confirmDocumentReview("org_1", "job_1", "user_1");
+    await confirmDocumentReview("org_1", "job_1", "user_1", "reviewer");
 
     expect(documentsRepository.insertFieldCorrections).not.toHaveBeenCalled();
     expect(documentsRepository.updateDocumentJob).toHaveBeenCalledWith(
@@ -448,7 +448,7 @@ describe("confirmDocumentReview", () => {
     vi.mocked(documentsRepository.getDocumentJobForOrganization).mockResolvedValue(completedJobWithFields as never);
     vi.mocked(documentsRepository.listFieldCorrections).mockResolvedValue([]);
 
-    await confirmDocumentReview("org_1", "job_1", "user_1", { Total: "$55.00" });
+    await confirmDocumentReview("org_1", "job_1", "user_1", "reviewer", { Total: "$55.00" });
 
     expect(documentsRepository.insertFieldCorrections).toHaveBeenCalledWith([
       { document_job_id: "job_1", field_name: "Total", previous_value: "$50.00", new_value: "$55.00", edited_by: "user_1" },
@@ -464,12 +464,100 @@ describe("rejectDocumentReview", () => {
   it("sets review_status to rejected", async () => {
     vi.mocked(documentsRepository.getDocumentJobForOrganization).mockResolvedValue(completedJobWithFields as never);
 
-    await rejectDocumentReview("org_1", "job_1", "user_1");
+    await rejectDocumentReview("org_1", "job_1", "user_1", "reviewer");
 
     expect(documentsRepository.updateDocumentJob).toHaveBeenCalledWith(
       "job_1",
       expect.objectContaining({ review_status: "rejected", reviewed_by: "user_1" }),
     );
+  });
+});
+
+describe("getFieldCorrections — permission", () => {
+  it("throws ForbiddenError for a member (no documents.review)", async () => {
+    vi.mocked(documentsRepository.getDocumentJobForOrganization).mockResolvedValue(
+      jobFixture({ status: "completed" }) as never,
+    );
+
+    await expect(getFieldCorrections("org_1", "job_1", "member")).rejects.toThrow(ForbiddenError);
+  });
+
+  it("allows a reviewer", async () => {
+    vi.mocked(documentsRepository.getDocumentJobForOrganization).mockResolvedValue(
+      jobFixture({ status: "completed" }) as never,
+    );
+    vi.mocked(documentsRepository.listFieldCorrections).mockResolvedValue([]);
+
+    await expect(getFieldCorrections("org_1", "job_1", "reviewer")).resolves.toBeDefined();
+  });
+});
+
+describe("saveFieldCorrections — permission", () => {
+  it("throws ForbiddenError for a member (no documents.edit)", async () => {
+    vi.mocked(documentsRepository.getDocumentJobForOrganization).mockResolvedValue(
+      jobFixture({ status: "completed" }) as never,
+    );
+
+    await expect(
+      saveFieldCorrections("org_1", "job_1", "user_1", "member", { field: "value" }),
+    ).rejects.toThrow(ForbiddenError);
+  });
+
+  it("allows a reviewer", async () => {
+    vi.mocked(documentsRepository.getDocumentJobForOrganization).mockResolvedValue(
+      jobFixture({ status: "completed" }) as never,
+    );
+    vi.mocked(documentsRepository.listFieldCorrections).mockResolvedValue([]);
+
+    await expect(
+      saveFieldCorrections("org_1", "job_1", "user_1", "reviewer", { field: "value" }),
+    ).resolves.toBeDefined();
+  });
+});
+
+describe("confirmDocumentReview / rejectDocumentReview — permission", () => {
+  it("throws ForbiddenError for a member (no documents.approve)", async () => {
+    vi.mocked(documentsRepository.getDocumentJobForOrganization).mockResolvedValue(
+      jobFixture({ status: "completed" }) as never,
+    );
+
+    await expect(confirmDocumentReview("org_1", "job_1", "user_1", "member")).rejects.toThrow(
+      ForbiddenError,
+    );
+    await expect(rejectDocumentReview("org_1", "job_1", "user_1", "member")).rejects.toThrow(
+      ForbiddenError,
+    );
+  });
+
+  it("allows a reviewer", async () => {
+    vi.mocked(documentsRepository.getDocumentJobForOrganization).mockResolvedValue(
+      jobFixture({ status: "completed" }) as never,
+    );
+
+    await expect(confirmDocumentReview("org_1", "job_1", "user_1", "reviewer")).resolves.toBeDefined();
+  });
+});
+
+describe("exportDocuments — permission", () => {
+  it("throws ForbiddenError for a member (no documents.export)", async () => {
+    await expect(
+      exportDocuments("org_1", "member", { format: "csv" } as never),
+    ).rejects.toThrow(ForbiddenError);
+  });
+
+  it("throws ForbiddenError for a reviewer (no documents.export)", async () => {
+    await expect(
+      exportDocuments("org_1", "reviewer", { format: "csv" } as never),
+    ).rejects.toThrow(ForbiddenError);
+  });
+
+  it("allows an admin", async () => {
+    vi.mocked(documentsRepository.listDocumentJobsForOrganization).mockResolvedValue({
+      jobs: [],
+      nextCursor: null,
+    } as never);
+
+    await expect(exportDocuments("org_1", "admin", { format: "csv" } as never)).resolves.toBeDefined();
   });
 });
 
@@ -502,6 +590,15 @@ describe("removeDocumentFile", () => {
     );
 
     await expect(removeDocumentFile("org_1", "job_1", "user_2", "member")).rejects.toThrow();
+    expect(storageService.deleteDocumentFile).not.toHaveBeenCalled();
+  });
+
+  it("throws a forbidden error for a reviewer who neither uploaded it nor is an owner/admin", async () => {
+    vi.mocked(documentsRepository.getDocumentJobForOrganizationIncludingDeleted).mockResolvedValue(
+      jobFixture({ user_id: "user_1", storage_path: "org_1/job_1/invoice.pdf" }) as never,
+    );
+
+    await expect(removeDocumentFile("org_1", "job_1", "user_2", "reviewer")).rejects.toThrow();
     expect(storageService.deleteDocumentFile).not.toHaveBeenCalled();
   });
 
@@ -551,6 +648,15 @@ describe("deleteDocument", () => {
     );
 
     await expect(deleteDocument("org_1", "job_1", "user_2", "member")).rejects.toThrow();
+    expect(documentsRepository.updateDocumentJob).not.toHaveBeenCalled();
+  });
+
+  it("throws a forbidden error for a reviewer who neither uploaded it nor is an owner/admin", async () => {
+    vi.mocked(documentsRepository.getDocumentJobForOrganizationIncludingDeleted).mockResolvedValue(
+      jobFixture({ user_id: "user_1", deleted_at: null }) as never,
+    );
+
+    await expect(deleteDocument("org_1", "job_1", "user_2", "reviewer")).rejects.toThrow();
     expect(documentsRepository.updateDocumentJob).not.toHaveBeenCalled();
   });
 
@@ -703,7 +809,7 @@ describe("lifecycle events — review decisions", () => {
   it("records review_confirmed with the caller as actor", async () => {
     vi.mocked(documentsRepository.getDocumentJobForOrganization).mockResolvedValue(completedJobWithFields as never);
 
-    await confirmDocumentReview("org_1", "job_1", "user_1");
+    await confirmDocumentReview("org_1", "job_1", "user_1", "reviewer");
 
     expect(documentsRepository.insertDocumentJobEvent).toHaveBeenCalledWith({
       document_job_id: "job_1",
@@ -718,7 +824,7 @@ describe("lifecycle events — review decisions", () => {
   it("records review_rejected with the caller as actor", async () => {
     vi.mocked(documentsRepository.getDocumentJobForOrganization).mockResolvedValue(completedJobWithFields as never);
 
-    await rejectDocumentReview("org_1", "job_1", "user_1");
+    await rejectDocumentReview("org_1", "job_1", "user_1", "reviewer");
 
     expect(documentsRepository.insertDocumentJobEvent).toHaveBeenCalledWith({
       document_job_id: "job_1",
@@ -736,7 +842,7 @@ describe("lifecycle events — review decisions", () => {
     );
     vi.mocked(documentsRepository.listFieldCorrections).mockResolvedValue([]);
 
-    await saveFieldCorrections("org_1", "job_1", "user_1", { VendorName: "Acme Corporation" });
+    await saveFieldCorrections("org_1", "job_1", "user_1", "reviewer", { VendorName: "Acme Corporation" });
 
     expect(documentsRepository.insertDocumentJobEvent).toHaveBeenCalledWith({
       document_job_id: "job_1",
@@ -752,7 +858,7 @@ describe("lifecycle events — review decisions", () => {
     vi.mocked(documentsRepository.getDocumentJobForOrganization).mockResolvedValue(completedJobWithFields as never);
     vi.mocked(documentsRepository.listFieldCorrections).mockResolvedValue([]);
 
-    await saveFieldCorrections("org_1", "job_1", "user_1", { VendorName: "Acme Corporation" });
+    await saveFieldCorrections("org_1", "job_1", "user_1", "reviewer", { VendorName: "Acme Corporation" });
 
     expect(documentsRepository.insertDocumentJobEvent).not.toHaveBeenCalled();
   });
@@ -819,7 +925,7 @@ describe("lifecycle events — event-log failures never fail the underlying oper
     vi.mocked(documentsRepository.getDocumentJobForOrganization).mockResolvedValue(completedJobWithFields as never);
     vi.mocked(documentsRepository.insertDocumentJobEvent).mockRejectedValue(new Error("db unreachable"));
 
-    const result = await confirmDocumentReview("org_1", "job_1", "user_1");
+    const result = await confirmDocumentReview("org_1", "job_1", "user_1", "reviewer");
 
     expect(result.review_status).toBe("confirmed");
   });
@@ -1166,7 +1272,7 @@ describe("exportDocuments", () => {
     } as never);
     vi.mocked(documentsRepository.listFieldCorrections).mockResolvedValue([]);
 
-    const result = await exportDocuments("org_1", { format: "csv" } as never);
+    const result = await exportDocuments("org_1", "admin", { format: "csv" } as never);
 
     expect(documentsRepository.listDocumentJobsForOrganization).toHaveBeenCalledWith("org_1", {
       status: "completed",
@@ -1200,7 +1306,7 @@ describe("exportDocuments", () => {
       },
     ] as never);
 
-    const result = await exportDocuments("org_1", { format: "csv" } as never);
+    const result = await exportDocuments("org_1", "admin", { format: "csv" } as never);
 
     expect(result.content).toContain("Acme Corporation");
     expect(result.content).not.toContain(",Acme,");
@@ -1212,7 +1318,7 @@ describe("exportDocuments", () => {
       nextCursor: "some-cursor",
     } as never);
 
-    await expect(exportDocuments("org_1", { format: "csv" } as never)).rejects.toMatchObject({
+    await expect(exportDocuments("org_1", "admin", { format: "csv" } as never)).rejects.toMatchObject({
       statusCode: 413,
       code: "PAYLOAD_TOO_LARGE",
     });
@@ -1225,7 +1331,7 @@ describe("exportDocuments", () => {
       nextCursor: null,
     } as never);
 
-    await exportDocuments("org_1", {
+    await exportDocuments("org_1", "admin", {
       format: "csv",
       documentType: "receipt",
       search: "acme",

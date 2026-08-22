@@ -43,7 +43,7 @@ describe("DocumentsWorkspace", () => {
   it("shows a loading state before data arrives", () => {
     vi.mocked(apiFetch).mockReturnValue(new Promise(() => {}));
 
-    render(<DocumentsWorkspace />, { wrapper: createQueryWrapper() });
+    render(<DocumentsWorkspace canExport />, { wrapper: createQueryWrapper() });
 
     expect(screen.getByText(/loading/i)).toBeInTheDocument();
   });
@@ -52,7 +52,7 @@ describe("DocumentsWorkspace", () => {
     const { ApiError } = await import("@/lib/api/response");
     vi.mocked(apiFetch).mockRejectedValue(new ApiError(500, "INTERNAL_ERROR", "boom"));
 
-    render(<DocumentsWorkspace />, { wrapper: createQueryWrapper() });
+    render(<DocumentsWorkspace canExport />, { wrapper: createQueryWrapper() });
 
     expect(await screen.findByText(/couldn.t load/i)).toBeInTheDocument();
   });
@@ -62,7 +62,7 @@ describe("DocumentsWorkspace", () => {
       listResult({ data: [jobFixture()], pagination: { nextCursor: "cursor2", hasMore: true } }),
     );
 
-    render(<DocumentsWorkspace />, { wrapper: createQueryWrapper() });
+    render(<DocumentsWorkspace canExport />, { wrapper: createQueryWrapper() });
 
     expect(await screen.findByText("invoice.pdf")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^next/i })).toBeEnabled();
@@ -72,7 +72,7 @@ describe("DocumentsWorkspace", () => {
   it("shows a 'no documents yet' empty state with an upload CTA when there are no results and no filters", async () => {
     vi.mocked(apiFetch).mockResolvedValue(listResult());
 
-    render(<DocumentsWorkspace />, { wrapper: createQueryWrapper() });
+    render(<DocumentsWorkspace canExport />, { wrapper: createQueryWrapper() });
 
     expect(await screen.findByText(/no documents yet/i)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /upload a document/i })).toHaveAttribute("href", "/upload");
@@ -81,7 +81,7 @@ describe("DocumentsWorkspace", () => {
   it("shows a 'no results for these filters' empty state, not the upload CTA, once a filter is active", async () => {
     const user = userEvent.setup();
     vi.mocked(apiFetch).mockResolvedValue(listResult());
-    render(<DocumentsWorkspace />, { wrapper: createQueryWrapper() });
+    render(<DocumentsWorkspace canExport />, { wrapper: createQueryWrapper() });
     await screen.findByText(/no documents yet/i);
 
     await user.selectOptions(screen.getByLabelText("Status"), "completed");
@@ -95,7 +95,7 @@ describe("DocumentsWorkspace", () => {
     vi.mocked(apiFetch).mockResolvedValueOnce(
       listResult({ data: [jobFixture()], pagination: { nextCursor: "cursor2", hasMore: true } }),
     );
-    render(<DocumentsWorkspace />, { wrapper: createQueryWrapper() });
+    render(<DocumentsWorkspace canExport />, { wrapper: createQueryWrapper() });
     await screen.findByText("invoice.pdf");
 
     vi.mocked(apiFetch).mockResolvedValueOnce(
@@ -111,7 +111,7 @@ describe("DocumentsWorkspace", () => {
   it("clicking Clear filters resets an active filter and refetches without it", async () => {
     const user = userEvent.setup();
     vi.mocked(apiFetch).mockResolvedValue(listResult());
-    render(<DocumentsWorkspace />, { wrapper: createQueryWrapper() });
+    render(<DocumentsWorkspace canExport />, { wrapper: createQueryWrapper() });
     await screen.findByText(/no documents yet/i);
 
     await user.selectOptions(screen.getByLabelText("Status"), "completed");

@@ -214,16 +214,10 @@ describe("createCheckoutSession", () => {
     expect(billingRepository.getOrganizationStripeLink).not.toHaveBeenCalled();
   });
 
-  it("succeeds for an admin, same as an owner", async () => {
-    vi.mocked(billingRepository.getOrganizationStripeLink).mockResolvedValue({
-      organizationId: "org_1",
-      stripeCustomerId: "cus_existing",
-    });
-    vi.spyOn(stripe.checkout.sessions, "create").mockResolvedValue({ url: "https://checkout.stripe.com/session_1" } as any);
-
-    await expect(billingService.createCheckoutSession({ ...baseParams, role: "admin" })).resolves.toEqual({
-      url: "https://checkout.stripe.com/session_1",
-    });
+  it("throws ForbiddenError for an admin role (billing is owner-only under the RBAC model)", async () => {
+    await expect(
+      billingService.createCheckoutSession({ ...baseParams, role: "admin" }),
+    ).rejects.toThrow(ForbiddenError);
   });
 });
 
@@ -279,16 +273,10 @@ describe("createPortalSession", () => {
     expect(billingRepository.getOrganizationStripeLink).not.toHaveBeenCalled();
   });
 
-  it("succeeds for an admin, same as an owner", async () => {
-    vi.mocked(billingRepository.getOrganizationStripeLink).mockResolvedValue({
-      organizationId: "org_1",
-      stripeCustomerId: "cus_existing",
-    });
-    vi.spyOn(stripe.billingPortal.sessions, "create").mockResolvedValue({ url: "https://billing.stripe.com/session_1" } as any);
-
+  it("throws ForbiddenError for an admin role (billing is owner-only under the RBAC model)", async () => {
     await expect(
       billingService.createPortalSession({ organizationId: "org_1", role: "admin", input: {} }),
-    ).resolves.toEqual({ url: "https://billing.stripe.com/session_1" });
+    ).rejects.toThrow(ForbiddenError);
   });
 });
 

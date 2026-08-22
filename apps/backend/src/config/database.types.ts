@@ -5,7 +5,7 @@
  * Supabase instance.
  */
 
-export type ProfileRole = "owner" | "admin" | "member";
+export type ProfileRole = "owner" | "admin" | "member" | "reviewer";
 export type SubscriptionStatus = "trialing" | "active" | "past_due" | "canceled" | "incomplete";
 export type DocumentJobStatus = "pending" | "processing" | "completed" | "failed" | "rejected_quota";
 export type DocumentType = "invoice" | "receipt" | "identity_document" | "generic";

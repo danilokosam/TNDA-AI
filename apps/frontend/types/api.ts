@@ -101,7 +101,7 @@ export type AuthSession = z.infer<typeof authSessionSchema>;
 export const authenticatedUserSchema = z.object({
   id: z.string(),
   email: z.string(),
-  role: z.enum(["owner", "admin", "member"]),
+  role: z.enum(["owner", "admin", "reviewer", "member"]),
   organization: z.object({ id: z.string(), name: z.string() }),
 });
 export type AuthenticatedUser = z.infer<typeof authenticatedUserSchema>;

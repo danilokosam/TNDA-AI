@@ -78,7 +78,7 @@ export const documentsRoutes = new Elysia({ prefix: "/api/v1/documents" })
   .get(
     "/export",
     async ({ auth, query }) => {
-      const result = await documentsService.exportDocuments(auth.organizationId, query);
+      const result = await documentsService.exportDocuments(auth.organizationId, auth.role, query);
       // A raw Response, not `set.headers` + a returned string — Elysia
       // appends its own default `text/plain` Content-Type to a plain
       // string return regardless of `set.headers` (confirmed empirically:
@@ -98,7 +98,7 @@ export const documentsRoutes = new Elysia({ prefix: "/api/v1/documents" })
   .post(
     "/export",
     async ({ auth, body }) => {
-      const result = await documentsService.exportDocuments(auth.organizationId, body);
+      const result = await documentsService.exportDocuments(auth.organizationId, auth.role, body);
       // Same raw-Response reasoning as the GET handler above — the only
       // difference is `body.fieldSelection`, which `exportDocuments`
       // already treats as an optional pass-through to `buildExportTable`.
@@ -130,7 +130,7 @@ export const documentsRoutes = new Elysia({ prefix: "/api/v1/documents" })
   .get(
     "/jobs/:id/corrections",
     async ({ auth, params }) => {
-      const { effective, history } = await documentsService.getFieldCorrections(auth.organizationId, params.id);
+      const { effective, history } = await documentsService.getFieldCorrections(auth.organizationId, params.id, auth.role);
       return { effective, history: history.map(toFieldCorrectionDto) };
     },
     { params: jobIdParamSchema },
@@ -142,6 +142,7 @@ export const documentsRoutes = new Elysia({ prefix: "/api/v1/documents" })
         auth.organizationId,
         params.id,
         auth.userId,
+        auth.role,
         body.corrections,
       );
       return toJobDto(job);
@@ -155,6 +156,7 @@ export const documentsRoutes = new Elysia({ prefix: "/api/v1/documents" })
         auth.organizationId,
         params.id,
         auth.userId,
+        auth.role,
         body.corrections,
       );
       return toJobDto(job);
@@ -168,6 +170,7 @@ export const documentsRoutes = new Elysia({ prefix: "/api/v1/documents" })
         auth.organizationId,
         params.id,
         auth.userId,
+        auth.role,
         body.corrections,
       );
       return toJobDto(job);

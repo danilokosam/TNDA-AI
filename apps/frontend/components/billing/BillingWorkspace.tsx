@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { LoaderCircle } from "lucide-react";
+import { can } from "@tnda-ai/shared";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CurrentSubscriptionCard } from "@/components/billing/CurrentSubscriptionCard";
@@ -43,7 +44,7 @@ interface BillingWorkspaceProps {
 }
 
 export function BillingWorkspace({ role }: BillingWorkspaceProps) {
-  const canManageBilling = role === "owner" || role === "admin";
+  const canManageBilling = can(role, "billing.manage");
 
   const searchParams = useSearchParams();
   const router = useRouter();

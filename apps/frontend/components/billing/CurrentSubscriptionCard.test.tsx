@@ -114,7 +114,7 @@ describe("CurrentSubscriptionCard", () => {
     );
 
     expect(screen.getByRole("button", { name: /manage billing/i })).toBeDisabled();
-    expect(screen.getByText(/only organization owners and admins can manage billing/i)).toBeInTheDocument();
+    expect(screen.getByText(/only the organization owner can manage billing/i)).toBeInTheDocument();
   });
 
   it("disables the Manage billing button and shows a pending label while the portal mutation is in flight", () => {

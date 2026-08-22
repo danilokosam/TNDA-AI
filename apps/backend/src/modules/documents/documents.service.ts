@@ -2,7 +2,8 @@ import { env } from "@/config/env";
 import { inspectDocumentFile, type InspectedFile, type SupportedDocumentMimeType } from "@/utils/file-inspector";
 import { extractZipEntries } from "@/utils/zip";
 import { computeAverageConfidence } from "@/utils/confidence";
-import { AppError, AzureServiceError, ConflictError, ForbiddenError, PayloadTooLargeError, QuotaExceededError, ValidationError } from "@/utils/errors";
+import { AppError, AzureServiceError, ConflictError, PayloadTooLargeError, QuotaExceededError, ValidationError } from "@/utils/errors";
+import { assertPermission, assertPermissionOrOwner } from "@/utils/authorization";
 import { getAnalysisOperationStatus } from "@/services/azure-document-intelligence.service";
 import {
   buildStoragePath,
@@ -689,8 +690,10 @@ export interface ExportDocumentsResult {
  */
 export async function exportDocuments(
   organizationId: string,
+  role: ProfileRole,
   query: ExportDocumentsBody,
 ): Promise<ExportDocumentsResult> {
+  assertPermission({ role }, "documents.export");
   const serializer = getExportSerializer(query.format);
 
   const result = await listDocumentJobsForOrganization(organizationId, {
@@ -813,7 +816,9 @@ async function stageFieldCorrections(
 export async function getFieldCorrections(
   organizationId: string,
   jobId: string,
+  role: ProfileRole,
 ): Promise<{ effective: Record<string, string>; history: FieldCorrectionRow[] }> {
+  assertPermission({ role }, "documents.review");
   const job = await getDocumentJobForOrganization(jobId, organizationId);
   const history = await listFieldCorrections(job.id);
   return { effective: reduceToEffectiveFields(history), history };
@@ -832,8 +837,10 @@ export async function saveFieldCorrections(
   organizationId: string,
   jobId: string,
   userId: string,
+  role: ProfileRole,
   corrections: Record<string, string>,
 ): Promise<DocumentJobRow> {
+  assertPermission({ role }, "documents.edit");
   const job = await getDocumentJobForOrganization(jobId, organizationId);
   assertJobIsCompleted(job);
 
@@ -863,9 +870,11 @@ async function setDocumentReview(
   organizationId: string,
   jobId: string,
   userId: string,
+  role: ProfileRole,
   reviewStatus: "confirmed" | "rejected",
   corrections: Record<string, string> | undefined,
 ): Promise<DocumentJobRow> {
+  assertPermission({ role }, "documents.approve");
   const job = await getDocumentJobForOrganization(jobId, organizationId);
   assertJobIsCompleted(job);
 
@@ -897,33 +906,20 @@ export function confirmDocumentReview(
   organizationId: string,
   jobId: string,
   userId: string,
+  role: ProfileRole,
   corrections?: Record<string, string>,
 ): Promise<DocumentJobRow> {
-  return setDocumentReview(organizationId, jobId, userId, "confirmed", corrections);
+  return setDocumentReview(organizationId, jobId, userId, role, "confirmed", corrections);
 }
 
 export function rejectDocumentReview(
   organizationId: string,
   jobId: string,
   userId: string,
+  role: ProfileRole,
   corrections?: Record<string, string>,
 ): Promise<DocumentJobRow> {
-  return setDocumentReview(organizationId, jobId, userId, "rejected", corrections);
-}
-
-/**
- * File/document deletion is restricted to the job's own uploader or an org
- * owner/admin — unlike review actions (edit/confirm/reject), which are
- * open to any org member (§4 of the review-workflow plan): these are
- * destructive, so they get the stricter gate.
- */
-function assertCanManageFile(job: DocumentJobRow, userId: string, role: ProfileRole): void {
-  const isUploader = job.user_id === userId;
-  const isOwnerOrAdmin = role === "owner" || role === "admin";
-
-  if (!isUploader && !isOwnerOrAdmin) {
-    throw new ForbiddenError("Only the person who uploaded this document, or an organization owner/admin, can do this.");
-  }
+  return setDocumentReview(organizationId, jobId, userId, role, "rejected", corrections);
 }
 
 /**
@@ -941,7 +937,12 @@ export async function removeDocumentFile(
   role: ProfileRole,
 ): Promise<DocumentJobRow> {
   const job = await getDocumentJobForOrganizationIncludingDeleted(jobId, organizationId);
-  assertCanManageFile(job, userId, role);
+  assertPermissionOrOwner(
+    { role, userId },
+    "documents.delete",
+    job,
+    (resource, auth) => resource.user_id === auth.userId,
+  );
 
   if (!job.storage_path) {
     return job;
@@ -971,7 +972,12 @@ export async function deleteDocument(
   role: ProfileRole,
 ): Promise<DocumentJobRow> {
   const job = await getDocumentJobForOrganizationIncludingDeleted(jobId, organizationId);
-  assertCanManageFile(job, userId, role);
+  assertPermissionOrOwner(
+    { role, userId },
+    "documents.delete",
+    job,
+    (resource, auth) => resource.user_id === auth.userId,
+  );
 
   if (job.deleted_at) {
     return job;

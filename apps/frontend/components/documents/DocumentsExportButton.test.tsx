@@ -161,6 +161,29 @@ describe("DocumentsExportButton", () => {
     expect(screen.getByRole("checkbox", { name: /vendorname/i })).toBeInTheDocument();
   });
 
+  it("leaves the trigger button enabled when canExport defaults (no prop passed)", () => {
+    render(<DocumentsExportButton filters={{}} availableColumns={AVAILABLE_COLUMNS} />, {
+      wrapper: createQueryWrapper(),
+    });
+    expect(screen.getByRole("button", { name: /export/i })).not.toBeDisabled();
+  });
+
+  it("leaves the trigger button enabled when canExport={true}", () => {
+    render(<DocumentsExportButton filters={{}} availableColumns={AVAILABLE_COLUMNS} canExport />, {
+      wrapper: createQueryWrapper(),
+    });
+    expect(screen.getByRole("button", { name: /export/i })).not.toBeDisabled();
+  });
+
+  it("disables the trigger button, with an explanatory title, when canExport={false}", () => {
+    render(<DocumentsExportButton filters={{}} availableColumns={AVAILABLE_COLUMNS} canExport={false} />, {
+      wrapper: createQueryWrapper(),
+    });
+    const trigger = screen.getByRole("button", { name: /export/i });
+    expect(trigger).toBeDisabled();
+    expect(trigger).toHaveAttribute("title", "Only admins and owners can export documents.");
+  });
+
   it("requests a configured (POST) export reflecting the dialog's column selection", async () => {
     vi.mocked(apiFetchFile).mockResolvedValue(fileResponse("documents-export-2026-08-10.csv"));
     const user = userEvent.setup();

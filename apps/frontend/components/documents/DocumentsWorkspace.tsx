@@ -21,6 +21,10 @@ import {
 
 const PAGE_SIZE = 20;
 
+interface DocumentsWorkspaceProps {
+  canExport: boolean;
+}
+
 /**
  * `filterBarKey` forces a full remount of `DocumentsFilterBar` on reset —
  * simpler and safer than syncing its internal (debounced) search-input
@@ -28,7 +32,7 @@ const PAGE_SIZE = 20;
  * "clear a subtree's own local state from outside" (see the bar's own doc
  * comment).
  */
-export function DocumentsWorkspace() {
+export function DocumentsWorkspace({ canExport }: DocumentsWorkspaceProps) {
   const [state, dispatch] = useReducer(documentsListReducer, initialDocumentsListState);
   const [filterBarKey, setFilterBarKey] = useState(0);
 
@@ -58,7 +62,11 @@ export function DocumentsWorkspace() {
           onFilterChange={handleFilterChange}
           onReset={handleReset}
         />
-        <DocumentsExportButton filters={state.filters} availableColumns={deriveAvailableExportColumns(data?.data ?? [])} />
+        <DocumentsExportButton
+          filters={state.filters}
+          availableColumns={deriveAvailableExportColumns(data?.data ?? [])}
+          canExport={canExport}
+        />
       </div>
 
       {isLoading ? (

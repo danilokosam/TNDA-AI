@@ -342,6 +342,34 @@ describe("DocumentResultsView — review workflow", () => {
 
     expect(await screen.findByText("This document hasn't finished processing yet.")).toBeInTheDocument();
   });
+
+  it("gates the fields section and Save/Confirm/Reject on canReview, and never fetches corrections when it's false", async () => {
+    mockApiFetch([
+      ["/documents/job_1", undefined, fieldShapedJob()],
+      ["/preview-url", undefined, { url: null }],
+    ]);
+    // `apiFetch`'s call history isn't reset between tests in this file (only
+    // `mockPush` is, in `beforeEach`), and plenty of earlier tests legitimately
+    // call `/corrections` — so only calls made *after* this render count as
+    // evidence for or against this test's own assertion.
+    const callsBeforeRender = vi.mocked(apiFetch).mock.calls.length;
+
+    render(<DocumentResultsView jobId="job_1" canReview={false} />, { wrapper: createQueryWrapper() });
+
+    expect(
+      await screen.findByText(/you don.t have permission to view or edit this document.s extracted data/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Total")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /save corrections/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^confirm$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^reject$/i })).not.toBeInTheDocument();
+    // Remove file / Delete document are a separate, pre-existing gap — untouched by this gating.
+    expect(screen.getByRole("button", { name: /^remove file$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^delete document$/i })).toBeInTheDocument();
+
+    const callsDuringRender = vi.mocked(apiFetch).mock.calls.slice(callsBeforeRender);
+    expect(callsDuringRender.some(([path]) => (path as string).endsWith("/corrections"))).toBe(false);
+  });
 });
 
 describe("DocumentResultsView — file lifecycle", () => {

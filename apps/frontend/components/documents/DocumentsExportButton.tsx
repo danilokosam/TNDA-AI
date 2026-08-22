@@ -21,6 +21,8 @@ import { EXPORT_FORMATS, type ExportColumnSpec, type ExportFormat } from "@/type
 interface DocumentsExportButtonProps {
   filters: DocumentsFilters;
   availableColumns: ExportColumnOption[];
+  /** Defaults to `true` so existing callers/tests that don't pass this keep working unchanged. */
+  canExport?: boolean;
 }
 
 const FORMAT_LABELS: Record<ExportFormat, string> = {
@@ -55,7 +57,7 @@ function downloadBlob(blob: Blob, fileName: string): void {
  * selection/ordering/renaming instead
  * (docs/adr/0015-configurable-export-formats.md).
  */
-export function DocumentsExportButton({ filters, availableColumns }: DocumentsExportButtonProps) {
+export function DocumentsExportButton({ filters, availableColumns, canExport = true }: DocumentsExportButtonProps) {
   const [configureOpen, setConfigureOpen] = useState(false);
   // Bumped every time the dialog is opened, forced into its `key` below —
   // the dialog derives its initial column list once, on mount
@@ -85,7 +87,13 @@ export function DocumentsExportButton({ filters, availableColumns }: DocumentsEx
     <>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button type="button" variant="outline" size="sm" disabled={exportDocuments.isPending}>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={exportDocuments.isPending || !canExport}
+            title={!canExport ? "Only admins and owners can export documents." : undefined}
+          >
             <Download />
             {exportDocuments.isPending ? "Exporting…" : "Export"}
             <ChevronDown />

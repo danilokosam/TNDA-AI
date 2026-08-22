@@ -1,7 +1,7 @@
 import type Stripe from "stripe";
 import { env } from "@/config/env";
 import { stripe, STRIPE_PRICE_ID_BY_PLAN, type PaidPlanId } from "@/config/stripe";
-import { AppError, ForbiddenError, ValidationError } from "@/utils/errors";
+import { AppError, ValidationError } from "@/utils/errors";
 import type { ProfileRole, SubscriptionStatus } from "@/config/database.types";
 import { getAllPlans, getEffectivePlan } from "@/modules/organization/organization.service";
 import {
@@ -11,6 +11,7 @@ import {
   upsertSubscriptionFromStripe,
 } from "@/modules/billing/billing.repository";
 import type { CheckoutRequestInput, PortalRequestInput } from "@/modules/billing/billing.schema";
+import { assertPermission } from "@/utils/authorization";
 
 export function appendQueryString(url: string, queryString: string): string {
   return `${url}${url.includes("?") ? "&" : "?"}${queryString}`;
@@ -49,20 +50,6 @@ async function resolveOrCreateStripeCustomer(organizationId: string, email: stri
   return customer.id;
 }
 
-/**
- * Billing changes real money and can affect the whole organization, so —
- * same tier of caution as `documents.service.ts#assertCanManageFile` for
- * destructive document actions, same `ForbiddenError`/403 pattern, no new
- * authorization mechanism — only an owner or admin may initiate checkout
- * or open the billing portal. A plain member can still view billing state
- * (`listAvailablePlans`/`getCurrentSubscription` are unrestricted).
- */
-function assertCanManageBilling(role: ProfileRole): void {
-  if (role !== "owner" && role !== "admin") {
-    throw new ForbiddenError("Only an organization owner or admin can manage billing.");
-  }
-}
-
 export interface CreateCheckoutSessionParams {
   organizationId: string;
   email: string;
@@ -76,7 +63,7 @@ export async function createCheckoutSession({
   role,
   input,
 }: CreateCheckoutSessionParams): Promise<{ url: string }> {
-  assertCanManageBilling(role);
+  assertPermission({ role }, "billing.manage");
   const customerId = await resolveOrCreateStripeCustomer(organizationId, email);
   const priceId = STRIPE_PRICE_ID_BY_PLAN[input.planId];
   const redirectBase = input.redirectUrl ?? env.APP_URL;
@@ -115,7 +102,7 @@ export async function createPortalSession({
   role,
   input,
 }: CreatePortalSessionParams): Promise<{ url: string }> {
-  assertCanManageBilling(role);
+  assertPermission({ role }, "billing.manage");
   const link = await getOrganizationStripeLink(organizationId);
 
   if (!link.stripeCustomerId) {

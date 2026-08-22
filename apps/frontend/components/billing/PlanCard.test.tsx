@@ -114,7 +114,7 @@ describe("PlanCard", () => {
     );
 
     expect(screen.getByRole("button", { name: /select/i })).toBeDisabled();
-    expect(screen.getByText(/only organization owners and admins can manage billing/i)).toBeInTheDocument();
+    expect(screen.getByText(/only the organization owner can manage billing/i)).toBeInTheDocument();
   });
 
   it("disables the Select button and shows a pending label while checkout is in flight", () => {

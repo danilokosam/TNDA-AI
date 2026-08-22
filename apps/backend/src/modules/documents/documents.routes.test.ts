@@ -420,6 +420,23 @@ describe("PATCH /api/v1/documents/jobs/:id/corrections", () => {
     const body = errorEnvelopeSchema.parse(await response.json());
     expect(body.error.code).toBe("CONFLICT");
   });
+
+  it("returns 403 for a member (no documents.edit)", async () => {
+    mockAuthenticated({ id: "user_2", organization_id: "org_1", email: "member@example.com", role: "member" });
+    vi.mocked(documentsRepository.getDocumentJobForOrganization).mockResolvedValue(jobRow());
+
+    const response = await app.handle(
+      new Request(`${JOB_URL}/corrections`, {
+        method: "PATCH",
+        headers: { ...AUTH_HEADERS, "Content-Type": "application/json" },
+        body: JSON.stringify({ corrections: { Total: "$55.00" } }),
+      }),
+    );
+
+    expect(response.status).toBe(403);
+    const body = errorEnvelopeSchema.parse(await response.json());
+    expect(body.error.code).toBe("FORBIDDEN");
+  });
 });
 
 describe("POST /api/v1/documents/jobs/:id/confirm", () => {
@@ -450,6 +467,23 @@ describe("POST /api/v1/documents/jobs/:id/confirm", () => {
     );
     const body = jobDtoSchema.parse(await response.json());
     expect(body.reviewStatus).toBe("confirmed");
+  });
+
+  it("returns 403 for a member (no documents.approve)", async () => {
+    mockAuthenticated({ id: "user_2", organization_id: "org_1", email: "member@example.com", role: "member" });
+    vi.mocked(documentsRepository.getDocumentJobForOrganization).mockResolvedValue(jobRow());
+
+    const response = await app.handle(
+      new Request(`${JOB_URL}/confirm`, {
+        method: "POST",
+        headers: { ...AUTH_HEADERS, "Content-Type": "application/json" },
+        body: JSON.stringify({ corrections: {} }),
+      }),
+    );
+
+    expect(response.status).toBe(403);
+    const body = errorEnvelopeSchema.parse(await response.json());
+    expect(body.error.code).toBe("FORBIDDEN");
   });
 });
 
@@ -662,6 +696,18 @@ describe("GET /api/v1/documents/export", () => {
     // XLSX files are zip archives - "PK" magic bytes confirm a real binary payload, not text.
     expect(bytes[0]).toBe(0x50);
     expect(bytes[1]).toBe(0x4b);
+  });
+
+  it("returns 403 for a reviewer (no documents.export)", async () => {
+    mockAuthenticated({ id: "user_2", organization_id: "org_1", email: "reviewer@example.com", role: "reviewer" });
+
+    const response = await app.handle(
+      new Request("http://localhost/api/v1/documents/export?format=csv", { headers: AUTH_HEADERS }),
+    );
+
+    expect(response.status).toBe(403);
+    const body = errorEnvelopeSchema.parse(await response.json());
+    expect(body.error.code).toBe("FORBIDDEN");
   });
 });
 

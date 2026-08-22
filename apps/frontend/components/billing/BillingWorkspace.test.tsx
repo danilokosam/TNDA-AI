@@ -151,15 +151,16 @@ describe("BillingWorkspace", () => {
 
     const button = await screen.findByRole("button", { name: /manage billing/i });
     expect(button).toBeDisabled();
-    expect(screen.getAllByText(/only organization owners and admins can manage billing/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/only the organization owner can manage billing/i).length).toBeGreaterThan(0);
   });
 
-  it("enables billing actions for an admin role", async () => {
+  it("disables billing actions for an admin role (billing is owner-only)", async () => {
     mockApi(realSubscriptionResponse());
 
     render(<BillingWorkspace role="admin" />, { wrapper: createQueryWrapper() });
 
-    expect(await screen.findByRole("button", { name: /manage billing/i })).toBeEnabled();
+    const button = await screen.findByRole("button", { name: /manage billing/i });
+    expect(button).toBeDisabled();
   });
 });
 

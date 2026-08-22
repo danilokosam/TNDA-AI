@@ -32,6 +32,8 @@ import type { DocumentReviewStatus } from "@/types/api";
 
 interface DocumentResultsViewProps {
   jobId: string;
+  /** Defaults to `true` so existing callers/tests that don't pass this keep working unchanged. */
+  canReview?: boolean;
 }
 
 /** Exported for `DocumentsTable` (Stage 5's History table) to reuse for its own review-status column — same cross-file display-map convention as `DocumentTypeSelect.tsx#DOCUMENT_TYPE_LABELS`. */
@@ -60,12 +62,14 @@ function mutationErrorMessage(error: unknown): string {
  * correction) always comes from `useFieldCorrections`. All hooks are
  * called unconditionally, before any of the early-return states below —
  * `useFieldCorrections`'s own `enabled` flag (not a conditional hook call)
- * is what skips fetching corrections for a job with nothing to correct yet.
+ * is what skips fetching corrections for a job with nothing to correct yet,
+ * or for a caller who lacks `documents.review` — the query simply doesn't
+ * fire rather than firing and getting a 403 the UI never surfaces.
  */
-export function DocumentResultsView({ jobId }: DocumentResultsViewProps) {
+export function DocumentResultsView({ jobId, canReview = true }: DocumentResultsViewProps) {
   const router = useRouter();
   const { data: job, isLoading, isError } = useJobStatus(jobId);
-  const { data: corrections } = useFieldCorrections(jobId, job?.status === "completed");
+  const { data: corrections } = useFieldCorrections(jobId, job?.status === "completed" && canReview);
   const saveCorrections = useSaveCorrections();
   const confirmReview = useConfirmReview();
   const rejectReview = useRejectReview();
@@ -214,17 +218,21 @@ export function DocumentResultsView({ jobId }: DocumentResultsViewProps) {
           <span>{reviewDisplay.label}</span>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {fields.length > 0 ? (
-            <Button variant="outline" size="sm" disabled={!isDirty || isMutating} onClick={handleSave}>
-              {saveCorrections.isPending ? "Saving…" : "Save corrections"}
-            </Button>
+          {canReview ? (
+            <>
+              {fields.length > 0 ? (
+                <Button variant="outline" size="sm" disabled={!isDirty || isMutating} onClick={handleSave}>
+                  {saveCorrections.isPending ? "Saving…" : "Save corrections"}
+                </Button>
+              ) : null}
+              <Button variant="secondary" size="sm" disabled={isMutating} onClick={handleConfirm}>
+                {confirmReview.isPending ? "Confirming…" : "Confirm"}
+              </Button>
+              <Button variant="destructive" size="sm" disabled={isMutating} onClick={handleReject}>
+                {rejectReview.isPending ? "Rejecting…" : "Reject"}
+              </Button>
+            </>
           ) : null}
-          <Button variant="secondary" size="sm" disabled={isMutating} onClick={handleConfirm}>
-            {confirmReview.isPending ? "Confirming…" : "Confirm"}
-          </Button>
-          <Button variant="destructive" size="sm" disabled={isMutating} onClick={handleReject}>
-            {rejectReview.isPending ? "Rejecting…" : "Reject"}
-          </Button>
 
           <div className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
 
@@ -288,20 +296,26 @@ export function DocumentResultsView({ jobId }: DocumentResultsViewProps) {
           {job.averageConfidence !== null ? (
             <p className="text-sm text-muted-foreground">Average confidence: {formatPercent(job.averageConfidence)}</p>
           ) : null}
-          {hasExtractedData ? (
-            <>
-              <DocumentFieldsTable fields={fields} draft={draft} onFieldChange={handleFieldChange} />
-              {fields.length > 0 && rawContentView ? (
-                <details className="text-sm">
-                  <summary className="cursor-pointer text-muted-foreground">Show raw extracted text</summary>
-                  <div className="mt-2">{rawContentView}</div>
-                </details>
-              ) : (
-                rawContentView
-              )}
-            </>
+          {canReview ? (
+            hasExtractedData ? (
+              <>
+                <DocumentFieldsTable fields={fields} draft={draft} onFieldChange={handleFieldChange} />
+                {fields.length > 0 && rawContentView ? (
+                  <details className="text-sm">
+                    <summary className="cursor-pointer text-muted-foreground">Show raw extracted text</summary>
+                    <div className="mt-2">{rawContentView}</div>
+                  </details>
+                ) : (
+                  rawContentView
+                )}
+              </>
+            ) : (
+              <p className="text-sm text-muted-foreground">No extracted data available.</p>
+            )
           ) : (
-            <p className="text-sm text-muted-foreground">No extracted data available.</p>
+            <p className="text-sm text-muted-foreground">
+              You don&apos;t have permission to view or edit this document&apos;s extracted data.
+            </p>
           )}
         </div>
         <DocumentPreviewPanel jobId={jobId} />

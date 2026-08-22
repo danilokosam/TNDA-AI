@@ -11,7 +11,7 @@ export interface AuthResult {
   user: {
     id: string;
     email: string;
-    role: "owner" | "admin" | "member";
+    role: "owner" | "admin" | "member" | "reviewer";
     organization: { id: string; name: string };
   };
   session: {
